@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from core.domain.dto import DishRecognitionResult, RecognitionSessionResult, ValidationResult
-from core.domain.entities import AnnotatedDetection, DetectionBox
+from core.domain.entities import AnnotatedDetection
 from core.domain.enums import ProcessingStage, TrayObjectClass, ValidationStatus
 from core.image_ops.overlap_cleaner import OverlapCleaner
 from core.logging.model_trace_logger import ModelTraceLogger
@@ -62,188 +62,235 @@ class RecognitionOrchestrator:
         timings = TimingTracker()
         trace = ModelTraceLogger()
         recognized_items: list[DishRecognitionResult] = []
-        annotated: list[AnnotatedDetection] = []
         validation_result: ValidationResult | None = None
+        validation_finished_logged = False
 
         self._run_logger.ensure_session()
         trace.add_entry(ProcessingStage.IMAGE_ACQUIRED.value, "Image acquired for recognition")
 
-        with timings.measure("total"):
+        # Total timer must span the full run including receipt + finalize persistence.
+        timings.start("total")
+        try:
             self._run_logger.save_source_image(image)
 
-            try:
-                with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-                    trace.add_entry(ProcessingStage.VALIDATION_STARTED.value, "Validation started asynchronously")
-                    timings.start("validation")
-                    validation_future: Future[ValidationResult] = self._validation_flow.start_async(image, executor)
+            with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+                trace.add_entry(ProcessingStage.VALIDATION_STARTED.value, "Validation started asynchronously")
+                timings.start("validation")
+                validation_future: Future[ValidationResult] = self._validation_flow.start_async(image, executor)
 
-                    timings.start("yolo_main")
-                    yolo_main = self._model_registry.get_yolo_main()
-                    main_detections = yolo_main.detect(image)
-                    yolo_ms = timings.stop("yolo_main")
-                    trace.add_entry(
-                        ProcessingStage.YOLO_MAIN_FINISHED.value,
-                        "YOLO main finished",
-                        payload={"detections": len(main_detections)},
-                        duration_ms=yolo_ms,
-                    )
-
-                    self._update_validation_state(validation_future, token, trace)
-                    token.raise_if_cancelled()
-
-                    cups = [box for box in main_detections if box.class_name == TrayObjectClass.CUP.value]
-                    dish_boxes = [
-                        box
-                        for box in main_detections
-                        if box.class_name in (TrayObjectClass.PLATE_FLAT.value, TrayObjectClass.BOWL_DEEP.value)
-                    ]
-                    cleaned_dish_boxes = OverlapCleaner.clean_overlapping_boxes(dish_boxes)
-                    trace.add_entry(
-                        ProcessingStage.YOLO_MAIN_FINISHED.value,
-                        "Main detections split",
-                        payload={
-                            "cups": len(cups),
-                            "dish_boxes_raw": len(dish_boxes),
-                            "dish_boxes_cleaned": len(cleaned_dish_boxes),
-                        },
-                    )
-
-                    timings.start("beverage_flow")
-                    beverage_items = self._beverage_flow.process(image=image, cup_boxes=cups)
-                    timings.stop("beverage_flow")
-                    recognized_items.extend(beverage_items)
-                    trace.add_entry(
-                        ProcessingStage.BEVERAGE_PROCESSED.value,
-                        "Beverage flow completed",
-                        payload={"recognized": len(beverage_items)},
-                    )
-
-                    self._update_validation_state(validation_future, token, trace)
-                    token.raise_if_cancelled()
-
-                    timings.start("first_head_flow")
-                    classified = self._first_head_flow.classify_dish_crops(image=image, dish_boxes=cleaned_dish_boxes)
-                    first_head_items, other_dish_boxes = self._first_head_flow.resolve_non_other_dishes(
-                        image=image,
-                        classified=classified,
-                    )
-                    timings.stop("first_head_flow")
-                    recognized_items.extend(first_head_items)
-                    trace.add_entry(
-                        ProcessingStage.FIRST_HEAD_PROCESSED.value,
-                        "First head flow completed",
-                        payload={
-                            "classified": len(classified),
-                            "resolved_non_other": len(first_head_items),
-                            "other_dish_boxes": len(other_dish_boxes),
-                        },
-                    )
-
-                    self._update_validation_state(validation_future, token, trace)
-                    token.raise_if_cancelled()
-
-                    timings.start("other_dish_flow")
-                    other_items = self._other_dish_flow.process(
-                        image=image,
-                        other_dish_boxes=other_dish_boxes,
-                        executor=executor,
-                    )
-                    timings.stop("other_dish_flow")
-                    recognized_items.extend(other_items)
-                    trace.add_entry(
-                        ProcessingStage.OTHER_DISH_PROCESSED.value,
-                        "Other dish flow completed",
-                        payload={"recognized": len(other_items)},
-                    )
-
-                    if validation_future.done():
-                        try:
-                            timings.stop("validation")
-                        except KeyError:
-                            pass
-                    validation_result = validation_future.result()
-                    self._validation_flow.ensure_valid_or_cancel(validation_result, token)
-                    if token.is_cancelled():
-                        token.raise_if_cancelled()
-
-            except RuntimeError as exc:
-                abort_reason = str(exc)
-                trace.add_entry(ProcessingStage.ABORTED.value, "Pipeline aborted", payload={"reason": abort_reason})
-                return self._finalize(
-                    success=False,
-                    aborted=True,
-                    abort_reason=abort_reason,
-                    recognized_items=[],
-                    annotated_detections=[],
-                    timings=timings,
-                    trace=trace,
-                    validation_result=validation_result,
-                    image=image,
-                )
-            except Exception as exc:  # noqa: BLE001
-                trace.add_exception(ProcessingStage.ABORTED.value, exc)
-                return self._finalize(
-                    success=False,
-                    aborted=False,
-                    abort_reason=str(exc),
-                    recognized_items=[],
-                    annotated_detections=[],
-                    timings=timings,
-                    trace=trace,
-                    validation_result=validation_result,
-                    image=image,
+                timings.start("yolo_main")
+                yolo_main = self._model_registry.get_yolo_main()
+                main_detections = yolo_main.detect(image)
+                yolo_ms = timings.stop("yolo_main")
+                trace.add_entry(
+                    ProcessingStage.YOLO_MAIN_FINISHED.value,
+                    "YOLO main finished",
+                    payload={"detections": len(main_detections)},
+                    duration_ms=yolo_ms,
                 )
 
-        timings.start("receipt_flow")
-        aggregated_items = self._receipt_flow.aggregate_items(recognized_items)
-        receipt = self._receipt_flow.build_receipt(aggregated_items)
-        timings.stop("receipt_flow")
-        trace.add_entry(
-            ProcessingStage.RECEIPT_READY.value,
-            "Receipt built",
-            payload={"line_items": len(receipt.items)},
-        )
+                latest_validation, validation_finished_logged = self._update_validation_state(
+                    validation_future,
+                    token,
+                    trace,
+                    validation_finished_logged,
+                    timings,
+                )
+                if latest_validation is not None:
+                    validation_result = latest_validation
+                token.raise_if_cancelled()
 
-        annotated = self._build_annotated_detections(aggregated_items)
-        trace.add_entry(
-            ProcessingStage.COMPLETED.value,
-            "Pipeline completed",
-            payload={"recognized_items": len(aggregated_items)},
-        )
+                cups = [box for box in main_detections if box.class_name == TrayObjectClass.CUP.value]
+                dish_boxes = [
+                    box
+                    for box in main_detections
+                    if box.class_name in (TrayObjectClass.PLATE_FLAT.value, TrayObjectClass.BOWL_DEEP.value)
+                ]
+                cleaned_dish_boxes = OverlapCleaner.clean_overlapping_boxes(dish_boxes)
+                trace.add_entry(
+                    ProcessingStage.YOLO_MAIN_FINISHED.value,
+                    "Main detections split",
+                    payload={
+                        "cups": len(cups),
+                        "dish_boxes_raw": len(dish_boxes),
+                        "dish_boxes_cleaned": len(cleaned_dish_boxes),
+                    },
+                )
 
-        return self._finalize(
-            success=True,
-            aborted=False,
-            abort_reason=None,
-            recognized_items=aggregated_items,
-            annotated_detections=annotated,
-            timings=timings,
-            trace=trace,
-            validation_result=validation_result,
-            image=image,
-            receipt=receipt,
-        )
+                timings.start("beverage_flow")
+                beverage_items = self._beverage_flow.process(image=image, cup_boxes=cups)
+                timings.stop("beverage_flow")
+                recognized_items.extend(beverage_items)
+                trace.add_entry(
+                    ProcessingStage.BEVERAGE_PROCESSED.value,
+                    "Beverage flow completed",
+                    payload={"recognized": len(beverage_items)},
+                )
+
+                latest_validation, validation_finished_logged = self._update_validation_state(
+                    validation_future,
+                    token,
+                    trace,
+                    validation_finished_logged,
+                    timings,
+                )
+                if latest_validation is not None:
+                    validation_result = latest_validation
+                token.raise_if_cancelled()
+
+                timings.start("first_head_flow")
+                classified = self._first_head_flow.classify_dish_crops(image=image, dish_boxes=cleaned_dish_boxes)
+                first_head_items, other_dish_boxes = self._first_head_flow.resolve_non_other_dishes(
+                    image=image,
+                    classified=classified,
+                )
+                timings.stop("first_head_flow")
+                recognized_items.extend(first_head_items)
+                trace.add_entry(
+                    ProcessingStage.FIRST_HEAD_PROCESSED.value,
+                    "First head flow completed",
+                    payload={
+                        "classified": len(classified),
+                        "resolved_non_other": len(first_head_items),
+                        "other_dish_boxes": len(other_dish_boxes),
+                    },
+                )
+
+                latest_validation, validation_finished_logged = self._update_validation_state(
+                    validation_future,
+                    token,
+                    trace,
+                    validation_finished_logged,
+                    timings,
+                )
+                if latest_validation is not None:
+                    validation_result = latest_validation
+                token.raise_if_cancelled()
+
+                timings.start("other_dish_flow")
+                other_items = self._other_dish_flow.process(
+                    image=image,
+                    other_dish_boxes=other_dish_boxes,
+                    executor=executor,
+                )
+                timings.stop("other_dish_flow")
+                recognized_items.extend(other_items)
+                trace.add_entry(
+                    ProcessingStage.OTHER_DISH_PROCESSED.value,
+                    "Other dish flow completed",
+                    payload={"recognized": len(other_items)},
+                )
+
+                validation_result = validation_future.result()
+                self._stop_validation_timer_if_running(timings)
+                self._validation_flow.ensure_valid_or_cancel(validation_result, token)
+                # Polling is repeated, but completion trace should be written exactly once.
+                if not validation_finished_logged:
+                    trace.add_entry(
+                        ProcessingStage.VALIDATION_FINISHED.value,
+                        "Validation finished",
+                        payload={
+                            "status": validation_result.status.value,
+                            "reason": validation_result.reason,
+                            "confidence": validation_result.confidence,
+                        },
+                    )
+                    validation_finished_logged = True
+                token.raise_if_cancelled()
+
+            timings.start("receipt_flow")
+            aggregated_items = self._receipt_flow.aggregate_items(recognized_items)
+            receipt = self._receipt_flow.build_receipt(aggregated_items)
+            timings.stop("receipt_flow")
+            trace.add_entry(
+                ProcessingStage.RECEIPT_READY.value,
+                "Receipt built",
+                payload={"line_items": len(receipt.items)},
+            )
+
+            annotated = self._build_annotated_detections(aggregated_items)
+            trace.add_entry(
+                ProcessingStage.COMPLETED.value,
+                "Pipeline completed",
+                payload={"recognized_items": len(aggregated_items)},
+            )
+
+            return self._finalize(
+                success=True,
+                aborted=False,
+                abort_reason=None,
+                recognized_items=aggregated_items,
+                annotated_detections=annotated,
+                timings=timings,
+                trace=trace,
+                validation_result=validation_result,
+                image=image,
+                receipt=receipt,
+            )
+
+        except RuntimeError as exc:
+            abort_reason = str(exc)
+            trace.add_entry(ProcessingStage.ABORTED.value, "Pipeline aborted", payload={"reason": abort_reason})
+            return self._finalize(
+                success=False,
+                aborted=True,
+                abort_reason=abort_reason,
+                recognized_items=[],
+                annotated_detections=[],
+                timings=timings,
+                trace=trace,
+                validation_result=validation_result,
+                image=image,
+            )
+        except Exception as exc:  # noqa: BLE001
+            trace.add_exception(ProcessingStage.ABORTED.value, exc)
+            return self._finalize(
+                success=False,
+                aborted=False,
+                abort_reason=str(exc),
+                recognized_items=[],
+                annotated_detections=[],
+                timings=timings,
+                trace=trace,
+                validation_result=validation_result,
+                image=image,
+            )
 
     def _update_validation_state(
         self,
         validation_future: Future[ValidationResult],
         token: CancellationToken,
         trace: ModelTraceLogger,
-    ) -> None:
+        validation_finished_logged: bool,
+        timings: TimingTracker,
+    ) -> tuple[ValidationResult | None, bool]:
         result = self._validation_flow.get_result_non_blocking(validation_future)
         if result is None:
-            return
+            return None, validation_finished_logged
 
         self._validation_flow.ensure_valid_or_cancel(result, token)
-        trace.add_entry(
-            ProcessingStage.VALIDATION_FINISHED.value,
-            "Validation finished",
-            payload={
-                "status": result.status.value,
-                "reason": result.reason,
-                "confidence": result.confidence,
-            },
-        )
+        if not validation_finished_logged:
+            # We may check future many times; completion event must stay single-shot.
+            trace.add_entry(
+                ProcessingStage.VALIDATION_FINISHED.value,
+                "Validation finished",
+                payload={
+                    "status": result.status.value,
+                    "reason": result.reason,
+                    "confidence": result.confidence,
+                },
+            )
+            validation_finished_logged = True
+
+        self._stop_validation_timer_if_running(timings)
+        return result, validation_finished_logged
+
+    @staticmethod
+    def _stop_validation_timer_if_running(timings: TimingTracker) -> None:
+        try:
+            timings.stop("validation")
+        except KeyError:
+            pass
 
     @staticmethod
     def _build_annotated_detections(items: list[DishRecognitionResult]) -> list[AnnotatedDetection]:
@@ -274,9 +321,6 @@ class RecognitionOrchestrator:
         image: np.ndarray,
         receipt: object | None = None,
     ) -> RecognitionSessionResult:
-        timings_payload = timings.to_dict()
-        total_time_ms = timings_payload.get("total", timings.total_time_ms())
-
         if receipt is not None:
             self._run_logger.save_receipt(receipt)
 
@@ -291,6 +335,11 @@ class RecognitionOrchestrator:
             parsed=validation_result.to_dict() if validation_result is not None else {"status": ValidationStatus.UNKNOWN.value},
         )
 
+        # Stop total at the very end so it covers all post-processing and artifact saves.
+        self._stop_validation_timer_if_running(timings)
+        self._stop_total_timer_if_running(timings)
+
+        total_time_ms = timings.to_dict().get("total", timings.total_time_ms())
         return RecognitionSessionResult(
             success=success,
             aborted=aborted,
@@ -300,3 +349,10 @@ class RecognitionOrchestrator:
             annotated_detections=annotated_detections,
             total_time_ms=total_time_ms,
         )
+
+    @staticmethod
+    def _stop_total_timer_if_running(timings: TimingTracker) -> None:
+        try:
+            timings.stop("total")
+        except KeyError:
+            pass

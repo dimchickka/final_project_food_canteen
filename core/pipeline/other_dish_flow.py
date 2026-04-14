@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from pathlib import Path
@@ -30,6 +31,7 @@ class OtherDishFlow:
         self._model_registry = model_registry
         self._second_head_flow = second_head_flow
         self._today_menu_root = Path(today_menu_root) if today_menu_root is not None else Path("data/menu/today")
+        self._logger = logging.getLogger(__name__)
 
     def process(
         self,
@@ -48,7 +50,16 @@ class OtherDishFlow:
             for dish_box in other_dish_boxes:
                 try:
                     results.extend(self._process_single_other_dish(image=image, dish_box=dish_box, executor=active_executor))
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    # Soft-failure policy: skip broken box, but keep diagnostic trace in logs.
+                    self._logger.warning(
+                        "OtherDishFlow soft-failure for bbox (%s,%s,%s,%s): %s",
+                        dish_box.x1,
+                        dish_box.y1,
+                        dish_box.x2,
+                        dish_box.y2,
+                        exc,
+                    )
                     continue
         finally:
             if own_executor and isinstance(active_executor, ThreadPoolExecutor):
