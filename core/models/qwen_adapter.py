@@ -116,9 +116,14 @@ class QwenAdapter:
         if isinstance(image, np.ndarray):
             if image.ndim == 2:
                 return Image.fromarray(image).convert("RGB")
-            if image.ndim == 3 and image.shape[-1] in (3, 4):
-                mode = "RGBA" if image.shape[-1] == 4 else "RGB"
-                return Image.fromarray(image, mode=mode).convert("RGB")
+            if image.ndim == 3 and image.shape[-1] == 3:
+                # ndarray inputs usually come from OpenCV, so 3-channel arrays are BGR -> convert to RGB.
+                rgb_array = image[..., ::-1]
+                return Image.fromarray(rgb_array).convert("RGB")
+            if image.ndim == 3 and image.shape[-1] == 4:
+                # Keep conversion deterministic for OpenCV BGRA input: reorder BGRA -> RGBA before PIL import.
+                rgba_array = image[..., [2, 1, 0, 3]]
+                return Image.fromarray(rgba_array, mode="RGBA").convert("RGB")
             raise ValueError("Unsupported numpy image shape. Expected HxW, HxWx3 or HxWx4.")
 
         if isinstance(image, (str, Path)):

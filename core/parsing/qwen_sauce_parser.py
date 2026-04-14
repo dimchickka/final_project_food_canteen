@@ -139,10 +139,19 @@ def parse_qwen_sauce_response(raw_text: str | None) -> SauceDetectionResult:
     elif skipped:
         notes_text = f"skipped invalid boxes: {skipped}"
 
+    parse_ok = True
+    if len(raw_boxes) > 0 and len(boxes) == 0:
+        # Non-empty model output where every box is invalid is treated as parse failure.
+        parse_ok = False
+        if notes_text:
+            notes_text = f"all boxes were invalid; {notes_text}"
+        else:
+            notes_text = "all boxes were invalid"
+
     return SauceDetectionResult(
         boxes=boxes,
         raw_text=raw_text,
-        parse_ok=True,
+        parse_ok=parse_ok,
         notes=notes_text,
     )
 
