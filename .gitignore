@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.idea/
+.venv/
+venv/
+data/logs/
+data/cache/
+*.pt
+*.pth
+*.onnx
+*.engine
