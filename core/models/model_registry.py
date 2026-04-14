@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib import import_module
 from pathlib import Path
+from inspect import Parameter, signature
 from threading import RLock
 from typing import Any, Protocol, cast
 
@@ -225,20 +226,36 @@ class ModelRegistry:
 
     @staticmethod
     def _call_with_supported_kwargs(callable_obj: Callable[..., Any], kwargs: dict[str, Any]) -> Any:
-        """Instantiate adapter and tolerate constructors with partial kwargs.
+        """Instantiate adapter without masking internal constructor TypeErrors.
 
-        This keeps the registry forward-compatible with adapter constructor
-        signatures while still passing standard args when supported.
+        We pre-filter kwargs by callable signature first. This keeps compatibility
+        with adapters that accept only a subset of standard args while avoiding
+        risky "retry after TypeError" logic that can hide real adapter bugs.
         """
+        sig = signature(callable_obj)
+        params = sig.parameters
+
+        # If callable accepts **kwargs, we can pass everything safely.
+        if any(param.kind is Parameter.VAR_KEYWORD for param in params.values()):
+            filtered_kwargs = kwargs
+        else:
+            accepted_names = {
+                name
+                for name, param in params.items()
+                if param.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
+            }
+            filtered_kwargs = {name: value for name, value in kwargs.items() if name in accepted_names}
+
+        # Validate argument compatibility before invocation.
         try:
-            return callable_obj(**kwargs)
-        except TypeError:
-            # Fallback for adapters that accept positional model source + device.
-            if "weights_path" in kwargs:
-                return callable_obj(kwargs["weights_path"], kwargs.get("device"))
-            if "model_path" in kwargs:
-                return callable_obj(kwargs["model_path"], kwargs.get("device"))
-            return callable_obj(kwargs.get("model_name_or_path"), kwargs.get("device"))
+            sig.bind_partial(**filtered_kwargs)
+        except TypeError as exc:
+            raise TypeError(
+                f"Adapter callable '{getattr(callable_obj, '__name__', repr(callable_obj))}' "
+                f"does not accept expected arguments {tuple(filtered_kwargs)}: {exc}"
+            ) from exc
+
+        return callable_obj(**filtered_kwargs)
 
     @staticmethod
     def _ensure_path_exists(path: Path, *, model_name: str) -> None:

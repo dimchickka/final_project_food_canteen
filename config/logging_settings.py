@@ -6,10 +6,10 @@ This module stores only logging/output flags and directories.
 from pathlib import Path
 from typing import Final
 
-from config.model_paths import ROOT_DIR
+from config.model_paths import DATA_DIR
 
 LOG_RUNS_TO_DISK: Final[bool] = True
-LOG_ROOT_DIR: Final[Path] = ROOT_DIR / "logs"
+LOG_ROOT_DIR: Final[Path] = DATA_DIR / "logs"  # Canonical location: data/logs
 
 SAVE_ANNOTATED_RESULT: Final[bool] = True
 SAVE_SOURCE_IMAGE: Final[bool] = True

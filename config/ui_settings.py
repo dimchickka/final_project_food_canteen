@@ -7,7 +7,7 @@ from typing import Final
 
 WINDOW_TITLE: Final[str] = "Food Canteen Tray Detector"
 SHOW_ADMIN_BUTTON_IN_TEST: Final[bool] = True
-SECRET_ADMIN_CLICKS: Final[int] = 7
+SECRET_ADMIN_CLICKS: Final[int] = 5  # Fixed by architecture contract.
 SECRET_CLICK_TIMEOUT_MS: Final[int] = 1500
 
 # Additional practical UI defaults.
