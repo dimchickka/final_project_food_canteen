@@ -52,3 +52,7 @@ class Receipt:
 
     def to_dict(self) -> dict[str, Any]:
         return {"items": [item.to_dict() for item in self.items]}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Receipt":
+        return cls(items=[ReceiptItem.from_dict(item) for item in data.get("items", [])])

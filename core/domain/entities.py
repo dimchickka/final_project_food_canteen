@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from core.domain.enums import ClipMatchMode, DishCategory, DishDetectionSource, ProcessingStage
+
 
 # Universal bounding box container used by detector/classifier outputs.
 @dataclass(slots=True)
@@ -98,12 +100,13 @@ class CropCandidate:
 
 
 # CLIP retrieval output for both phrase-based and photo-based embedding matching.
+# Dedicated enum prevents free-form mode strings and keeps the contract strict.
 @dataclass(slots=True)
 class ClipMatchResult:
     matched_name: str
     matched_category: str
     score: float
-    mode: str
+    mode: ClipMatchMode
     matched_description: str | None = None
     embedding_source_path: str | None = None
 
@@ -112,7 +115,7 @@ class ClipMatchResult:
             "matched_name": self.matched_name,
             "matched_category": self.matched_category,
             "score": self.score,
-            "mode": self.mode,
+            "mode": self.mode.value,
             "matched_description": self.matched_description,
             "embedding_source_path": self.embedding_source_path,
         }
@@ -123,7 +126,7 @@ class ClipMatchResult:
             matched_name=str(data["matched_name"]),
             matched_category=str(data["matched_category"]),
             score=float(data["score"]),
-            mode=str(data["mode"]),
+            mode=ClipMatchMode(data["mode"]),
             matched_description=data.get("matched_description"),
             embedding_source_path=data.get("embedding_source_path"),
         )
@@ -132,7 +135,7 @@ class ClipMatchResult:
 # Unified explanation object to preserve why a label was selected.
 @dataclass(slots=True)
 class RecognitionEvidence:
-    source: str
+    source: DishDetectionSource
     model_name: str | None = None
     score: float | None = None
     chosen_label: str | None = None
@@ -142,7 +145,7 @@ class RecognitionEvidence:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "source": self.source,
+            "source": self.source.value,
             "model_name": self.model_name,
             "score": self.score,
             "chosen_label": self.chosen_label,
@@ -155,7 +158,7 @@ class RecognitionEvidence:
     def from_dict(cls, data: dict[str, Any]) -> "RecognitionEvidence":
         bbox_data = data.get("bbox")
         return cls(
-            source=str(data["source"]),
+            source=DishDetectionSource(data["source"]),
             model_name=data.get("model_name"),
             score=(float(data["score"]) if data.get("score") is not None else None),
             chosen_label=data.get("chosen_label"),
@@ -171,7 +174,7 @@ class MenuDish:
     dish_id: str
     name: str
     slug: str
-    category: str
+    category: DishCategory
     folder_path: str
     crop_image_path: str | None = None
     crop_embedding_path: str | None = None
@@ -186,7 +189,7 @@ class MenuDish:
             "dish_id": self.dish_id,
             "name": self.name,
             "slug": self.slug,
-            "category": self.category,
+            "category": self.category.value,
             "folder_path": self.folder_path,
             "crop_image_path": self.crop_image_path,
             "crop_embedding_path": self.crop_embedding_path,
@@ -203,7 +206,7 @@ class MenuDish:
             dish_id=str(data["dish_id"]),
             name=str(data["name"]),
             slug=str(data["slug"]),
-            category=str(data["category"]),
+            category=DishCategory(data["category"]),
             folder_path=str(data["folder_path"]),
             crop_image_path=data.get("crop_image_path"),
             crop_embedding_path=data.get("crop_embedding_path"),
@@ -218,7 +221,7 @@ class MenuDish:
 # Time-ordered lifecycle event entry for observability/debugging.
 @dataclass(slots=True)
 class PipelineTraceEntry:
-    stage: str
+    stage: ProcessingStage
     message: str
     timestamp: str | None = None
     duration_ms: float | None = None
@@ -226,7 +229,7 @@ class PipelineTraceEntry:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "stage": self.stage,
+            "stage": self.stage.value,
             "message": self.message,
             "timestamp": self.timestamp,
             "duration_ms": self.duration_ms,
@@ -236,7 +239,7 @@ class PipelineTraceEntry:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PipelineTraceEntry":
         return cls(
-            stage=str(data["stage"]),
+            stage=ProcessingStage(data["stage"]),
             message=str(data["message"]),
             timestamp=data.get("timestamp"),
             duration_ms=(float(data["duration_ms"]) if data.get("duration_ms") is not None else None),
