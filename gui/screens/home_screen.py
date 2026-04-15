@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from config.settings import TEST_RECOGNITION
 from config.ui_settings import SHOW_ADMIN_BUTTON_IN_TEST
@@ -43,7 +43,23 @@ class HomeScreen(QWidget):
         self.start_button.setStyleSheet("font-size: 28px; font-weight: 700;")
         self.start_button.clicked.connect(self.start_recognition_requested)
 
+        self.status = QLabel("")
+        self.status.setStyleSheet("font-size: 14px; color: #666;")
+        self.status.setAlignment(Qt.AlignHCenter)
+        self.status.hide()
+
         root.addWidget(self.ready_label, alignment=Qt.AlignHCenter)
         root.addSpacing(16)
         root.addWidget(self.start_button, alignment=Qt.AlignHCenter)
+        root.addSpacing(12)
+        root.addWidget(self.status, alignment=Qt.AlignHCenter)
         root.addStretch(2)
+
+    def set_status(self, message: str) -> None:
+        text = message.strip()
+        if text:
+            self.status.setText(text)
+            self.status.show()
+        else:
+            self.status.clear()
+            self.status.hide()

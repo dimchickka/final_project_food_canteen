@@ -5,9 +5,6 @@ Holds screen stack and delegates heavy business actions to AppController.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QInputDialog,
@@ -43,8 +40,6 @@ class MainWindow(QMainWindow):
         self.controller = AppController()
         self._build_ui()
         self._connect_controller_signals()
-
-        self.controller.ensure_models_ready_if_needed()
 
     def _build_ui(self) -> None:
         self.stack = QStackedWidget()
@@ -110,6 +105,14 @@ class MainWindow(QMainWindow):
         self._show(self.home_screen)
 
     def _on_start_recognition(self) -> None:
+        ready, reason = self.controller.check_recognition_ready()
+        if not ready:
+            # Guard transition: do not open processing screen when preflight failed.
+            QMessageBox.information(self, "Распознавание недоступно", reason)
+            self.home_screen.set_status(reason)
+            self._show(self.home_screen)
+            return
+
         if TEST_RECOGNITION:
             choice, ok = QInputDialog.getItem(
                 self,
@@ -134,7 +137,7 @@ class MainWindow(QMainWindow):
             self._show(self.recognition_screen)
             self.controller.start_recognition_from_file(path)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Распознавание", str(exc))
+            QMessageBox.critical(self, "Распознавание", f"Не удалось запустить распознавание: {exc}")
             self._go_home()
 
     def _start_recognition_from_camera(self) -> None:
@@ -150,9 +153,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Камера", "Не удалось получить кадр.")
             return
 
-        self.recognition_screen.start_processing("Распознавание запущено...")
-        self._show(self.recognition_screen)
-        self.controller.start_recognition_from_camera_frame(frame)
+        try:
+            self.recognition_screen.start_processing("Распознавание запущено...")
+            self._show(self.recognition_screen)
+            self.controller.start_recognition_from_camera_frame(frame)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Распознавание", f"Не удалось запустить распознавание: {exc}")
+            self._go_home()
 
     def _on_recognition_done(self, result) -> None:
         self.recognition_screen.stop_processing()
@@ -186,6 +193,13 @@ class MainWindow(QMainWindow):
         self.add_dish_screen.reset_form()
 
     def _open_menu_browser(self) -> None:
+        ready, reason = self.controller.check_menu_admin_ready()
+        if not ready:
+            QMessageBox.critical(self, "Global menu", reason)
+            return
+
+        # Empty global menu is valid; we still open the screen and show empty list.
+        self.menu_browser_screen.set_status("Загружаю global menu...")
         self._show(self.menu_browser_screen)
         self.controller.load_global_menu(None, on_result=self._set_menu_rows)
 
@@ -193,7 +207,9 @@ class MainWindow(QMainWindow):
         self.controller.search_global_menu(query=query, category=category, on_result=self._set_menu_rows)
 
     def _set_menu_rows(self, rows: object) -> None:
-        self.menu_browser_screen.set_rows(normalize_menu_rows(rows))
+        normalized = normalize_menu_rows(rows)
+        self.menu_browser_screen.set_rows(normalized)
+        self.menu_browser_screen.set_status(f"Загружено блюд: {len(normalized)}")
 
     def _on_toggle_dish_active(self, category: str, slug: str, is_active_now: bool) -> None:
         self.controller.set_dish_active(
@@ -204,17 +220,26 @@ class MainWindow(QMainWindow):
         )
 
     def _open_today_menu(self) -> None:
+        ready, reason = self.controller.check_menu_admin_ready()
+        if not ready:
+            QMessageBox.critical(self, "Today menu", reason)
+            return
+
+        # Empty today menu is valid; screen must open with empty selected list.
+        self.today_menu_screen.set_status("Загружаю today menu...")
         self._show(self.today_menu_screen)
         category = self.today_menu_screen.category_combo.currentText()
         self._load_today_category(category)
-        # Explicitly apply saved today selections after async load so current category is redrawn immediately.
         self.controller.load_today_menu(
             None,
             on_result=lambda rows: self.today_menu_screen.set_today_rows(normalize_menu_rows(rows)),
         )
 
     def _load_today_category(self, category: str) -> None:
-        self.controller.load_global_menu(category, on_result=lambda rows: self.today_menu_screen.set_available_rows(normalize_menu_rows(rows)))
+        self.controller.load_global_menu(
+            category,
+            on_result=lambda rows: self.today_menu_screen.set_available_rows(normalize_menu_rows(rows)),
+        )
 
     def _save_today_menu(self, payload: dict) -> None:
         self.controller.set_today_menu(payload, on_result=lambda _: self.today_menu_screen.notify("Today menu сохранено."))
@@ -224,8 +249,11 @@ class MainWindow(QMainWindow):
             self.recognition_screen.set_status(text)
         elif self.stack.currentWidget() is self.add_dish_screen:
             self.add_dish_screen.set_status(text)
+        elif self.stack.currentWidget() is self.today_menu_screen:
+            self.today_menu_screen.set_status(text)
 
     def _on_controller_error(self, text: str) -> None:
         QMessageBox.critical(self, "Ошибка", text)
         if self.stack.currentWidget() is self.recognition_screen:
             self.recognition_screen.show_error(text)
+            self._go_home()

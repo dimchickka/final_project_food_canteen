@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from gui.widgets.searchable_dish_list import SearchableDishList
 
@@ -23,6 +23,7 @@ class MenuBrowserScreen(QWidget):
         root = QVBoxLayout(self)
 
         self.list_widget = SearchableDishList(with_toggle=True)
+        self.status = QLabel("Готово.")
         self.back_btn = QPushButton("Назад в админ-панель")
 
         self.list_widget.filters_changed.connect(self.query_changed)
@@ -31,10 +32,14 @@ class MenuBrowserScreen(QWidget):
         self.back_btn.clicked.connect(self.back_requested)
 
         root.addWidget(self.list_widget, stretch=1)
+        root.addWidget(self.status)
         root.addWidget(self.back_btn)
 
     def set_rows(self, rows: list[dict[str, Any]]) -> None:
         self.list_widget.set_rows(rows)
+
+    def set_status(self, text: str) -> None:
+        self.status.setText(text)
 
     def notify(self, text: str) -> None:
         QMessageBox.information(self, "Global menu", text)

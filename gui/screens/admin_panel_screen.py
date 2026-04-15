@@ -21,6 +21,9 @@ class AdminPanelScreen(QWidget):
         title = QLabel("Админ-панель")
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
 
+        self.status = QLabel("")
+        self.status.setStyleSheet("color: #666;")
+
         self.add_btn = QPushButton("Добавить блюдо")
         self.menu_btn = QPushButton("Global menu")
         self.today_btn = QPushButton("Today menu")
@@ -36,8 +39,12 @@ class AdminPanelScreen(QWidget):
 
         root.addWidget(title)
         root.addSpacing(8)
+        root.addWidget(self.status)
         root.addWidget(self.add_btn)
         root.addWidget(self.menu_btn)
         root.addWidget(self.today_btn)
         root.addStretch(1)
         root.addWidget(self.exit_btn)
+
+    def set_status(self, text: str) -> None:
+        self.status.setText(text)

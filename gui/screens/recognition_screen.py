@@ -37,6 +37,8 @@ class RecognitionScreen(QWidget):
 
     def stop_processing(self) -> None:
         self.overlay.hide_loading()
+        if not self.status.text().startswith("Ошибка"):
+            self.status.setText("Ожидание запуска...")
 
     def show_error(self, text: str) -> None:
         self.status.setText(f"Ошибка: {text}")
