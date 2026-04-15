@@ -54,10 +54,12 @@ class AppController(QObject):
         self._first_head_descriptions = self._heads_root / "first_head" / "descriptions.txt"
         self._second_head_descriptions = self._heads_root / "second_head" / "descriptions.txt"
 
-        # Heavy CLIP-dependent services are lazy to avoid blocking UI in simple navigation flows.
+        # Heavy model/index path stays isolated from lightweight menu reading/listing path.
         self._index_builder: MenuIndexBuilder | None = None
-        self._menu_repository: MenuRepository | None = None
-        self._today_menu_service: TodayMenuService | None = None
+        self._menu_repository_light: MenuRepository | None = None
+        self._menu_repository_heavy: MenuRepository | None = None
+        self._today_menu_service_light: TodayMenuService | None = None
+        self._today_menu_service_heavy: TodayMenuService | None = None
         self._phrase_regenerator: PhraseRegenerator | None = None
         self._orchestrator = RecognitionOrchestrator(
             model_registry=self._model_registry,
@@ -140,20 +142,43 @@ class AppController(QObject):
     # -----------------------
     def _get_index_builder(self) -> MenuIndexBuilder:
         if self._index_builder is None:
-            # Delayed CLIP adapter access: keep startup/light UI flows responsive.
+            # CLIP is created only for heavy writes/rebuilds, never for simple read/list flows.
             self._index_builder = MenuIndexBuilder(self._model_registry.get_clip())
         return self._index_builder
 
-    def _get_menu_repository(self) -> MenuRepository:
-        if self._menu_repository is None:
-            # Repository itself is cheap; heavy builder is still lazy and only created on first need.
-            self._menu_repository = MenuRepository(index_builder=self._get_index_builder())
-        return self._menu_repository
+    def _get_menu_repository_light(self) -> MenuRepository:
+        if self._menu_repository_light is None:
+            # Listing/search reads meta.json from filesystem and should not depend on CLIP init.
+            self._menu_repository_light = MenuRepository(menu_root=self._global_menu_root, index_builder=None)
+        return self._menu_repository_light
 
-    def _get_today_menu_service(self) -> TodayMenuService:
-        if self._today_menu_service is None:
-            self._today_menu_service = TodayMenuService(index_builder=self._get_index_builder())
-        return self._today_menu_service
+    def _get_menu_repository_heavy(self) -> MenuRepository:
+        if self._menu_repository_heavy is None:
+            # Heavy path keeps index builder attached for embedding/index updates on write actions.
+            self._menu_repository_heavy = MenuRepository(
+                menu_root=self._global_menu_root,
+                index_builder=self._get_index_builder(),
+            )
+        return self._menu_repository_heavy
+
+    def _get_today_menu_service_light(self) -> TodayMenuService:
+        if self._today_menu_service_light is None:
+            # Today-menu listing is lightweight and must not trigger CLIP load.
+            self._today_menu_service_light = TodayMenuService(
+                global_menu_root=self._global_menu_root,
+                today_menu_root=self._today_menu_root,
+                index_builder=None,
+            )
+        return self._today_menu_service_light
+
+    def _get_today_menu_service_heavy(self) -> TodayMenuService:
+        if self._today_menu_service_heavy is None:
+            self._today_menu_service_heavy = TodayMenuService(
+                global_menu_root=self._global_menu_root,
+                today_menu_root=self._today_menu_root,
+                index_builder=self._get_index_builder(),
+            )
+        return self._today_menu_service_heavy
 
     def _get_phrase_regenerator(self) -> PhraseRegenerator:
         if self._phrase_regenerator is None:
@@ -209,7 +234,7 @@ class AppController(QObject):
 
     def create_dish(self, payload: dict[str, Any], on_result: Callable[[object], None]) -> None:
         try:
-            repository = self._get_menu_repository()
+            repository = self._get_menu_repository_heavy()
         except Exception as exc:  # noqa: BLE001
             self.operation_error.emit(f"Не удалось инициализировать global menu сервис: {exc}")
             return
@@ -227,7 +252,7 @@ class AppController(QObject):
         on_result: Callable[[object], None],
     ) -> None:
         try:
-            repository = self._get_menu_repository()
+            repository = self._get_menu_repository_heavy()
         except Exception as exc:  # noqa: BLE001
             self.operation_error.emit(f"Не удалось инициализировать global menu сервис: {exc}")
             return
@@ -252,7 +277,7 @@ class AppController(QObject):
 
     def load_global_menu(self, category: str | None, on_result: Callable[[object], None]) -> None:
         try:
-            repository = self._get_menu_repository()
+            repository = self._get_menu_repository_light()
             if category and category != "all":
                 task = WorkerTask(
                     fn=repository.list_by_category,
@@ -276,7 +301,7 @@ class AppController(QObject):
             kwargs["category"] = category
 
         try:
-            repository = self._get_menu_repository()
+            repository = self._get_menu_repository_light()
         except Exception as exc:  # noqa: BLE001
             self.operation_error.emit(f"Не удалось выполнить поиск в global menu: {exc}")
             on_result([])
@@ -293,7 +318,7 @@ class AppController(QObject):
             kwargs["category"] = category
 
         try:
-            service = self._get_today_menu_service()
+            service = self._get_today_menu_service_light()
         except Exception as exc:  # noqa: BLE001
             self.operation_error.emit(f"Не удалось открыть today menu: {exc}")
             on_result([])
@@ -306,7 +331,7 @@ class AppController(QObject):
 
     def set_today_menu(self, mapping: dict[str, list[str]], on_result: Callable[[object], None]) -> None:
         try:
-            service = self._get_today_menu_service()
+            service = self._get_today_menu_service_heavy()
         except Exception as exc:  # noqa: BLE001
             self.operation_error.emit(f"Не удалось инициализировать today menu сервис: {exc}")
             return
@@ -319,7 +344,7 @@ class AppController(QObject):
 
     def _load_all_categories(self) -> list[Any]:
         rows: list[Any] = []
-        repository = self._get_menu_repository()
+        repository = self._get_menu_repository_light()
         for category in ("beverage", "soup", "portioned", "garnish", "meat", "sauce"):
             rows.extend(repository.list_by_category(category, include_inactive=True))
         return rows
