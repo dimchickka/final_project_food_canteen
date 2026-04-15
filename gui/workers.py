@@ -100,8 +100,8 @@ class PhraseGenerationWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
-            self.progress.emit("Генерирую фразу...")
-            phrase = self._task.fn(**self._task.kwargs)
+            # Worker can now stream phased status updates to UI (warmup/generation).
+            phrase = self._task.fn(progress_callback=self.progress.emit, **self._task.kwargs)
             self.result.emit(str(phrase))
         except Exception as exc:  # noqa: BLE001
             self.error.emit(_format_worker_error(exc))

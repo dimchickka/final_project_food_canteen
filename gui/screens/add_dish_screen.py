@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -36,6 +36,10 @@ class AddDishScreen(QWidget):
         super().__init__(parent)
         self._source_image: np.ndarray | None = None
         self._crop_image: np.ndarray | None = None
+        self._phrase_generation_in_progress = False
+        self._slow_feedback_timer = QTimer(self)
+        self._slow_feedback_timer.setSingleShot(True)
+        self._slow_feedback_timer.timeout.connect(self._on_phrase_generation_slow)
 
         root = QVBoxLayout(self)
 
@@ -183,10 +187,15 @@ class AddDishScreen(QWidget):
             self.status.setText(error_text)
             return
 
-        self.status.setText("Запрос генерации фразы отправлен...")
+        self.set_phrase_generation_in_progress(True)
+        # Explicit warmup status: first lazy Qwen load can be noticeably long.
+        self.status.setText("Подготавливаю Qwen... Это может занять некоторое время при первом запуске.")
         self.regenerate_phrase_requested.emit(self._crop_image, name, category)
 
     def _on_confirm(self) -> None:
+        if self._phrase_generation_in_progress:
+            self.status.setText("Дождитесь завершения генерации фразы.")
+            return
         is_valid, error_text, name, category, phrase = self._validate_for_confirm()
         if not is_valid:
             QMessageBox.warning(self, "Сохранение", error_text)
@@ -204,7 +213,31 @@ class AddDishScreen(QWidget):
 
     def set_phrase(self, text: str) -> None:
         self.phrase_text.setPlainText(text)
-        self.status.setText("Фраза обновлена. Можно подтвердить блюдо.")
+        self.status.setText("Фраза успешно сгенерирована.")
+
+    def set_phrase_generation_in_progress(self, in_progress: bool) -> None:
+        # Block repeated regenerate clicks to avoid parallel phrase-generation workers.
+        self._phrase_generation_in_progress = in_progress
+        self.regen_btn.setEnabled(not in_progress)
+        self.confirm_btn.setEnabled(not in_progress)
+        if in_progress:
+            self._slow_feedback_timer.start(5000)
+        else:
+            self._slow_feedback_timer.stop()
+
+    def is_phrase_generation_in_progress(self) -> bool:
+        return self._phrase_generation_in_progress
+
+    def finish_phrase_generation(self, success: bool) -> None:
+        self.set_phrase_generation_in_progress(False)
+        if success:
+            self.status.setText("Фраза успешно сгенерирована.")
+            return
+        self.status.setText("Не удалось сгенерировать фразу.")
+
+    def _on_phrase_generation_slow(self) -> None:
+        if self._phrase_generation_in_progress:
+            self.status.setText("Подготавливаю Qwen... Это может занять некоторое время при первом запуске.")
 
     def set_status(self, text: str) -> None:
         self.status.setText(text)
@@ -212,6 +245,7 @@ class AddDishScreen(QWidget):
     def reset_form(self) -> None:
         self._source_image = None
         self._crop_image = None
+        self.set_phrase_generation_in_progress(False)
         self.name_input.clear()
         self.phrase_text.clear()
         self.category_combo.setCurrentIndex(0)

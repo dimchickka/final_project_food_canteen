@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self.controller.recognition_finished.connect(self._on_recognition_done)
         self.controller.operation_error.connect(self._on_controller_error)
         self.controller.operation_progress.connect(self._on_controller_progress)
+        self.controller.phrase_generation_finished.connect(self._on_phrase_generation_finished)
 
     def _show(self, widget) -> None:
         self.stack.setCurrentWidget(widget)
@@ -191,7 +192,16 @@ class MainWindow(QMainWindow):
             self._show(self.admin_panel_screen)
 
     def _on_regenerate_phrase(self, image, dish_name: str, category: str) -> None:
-        self.controller.regenerate_phrase(image, dish_name, category, on_result=self.add_dish_screen.set_phrase)
+        self.controller.regenerate_phrase(image, dish_name, category, on_result=self._on_phrase_regenerated)
+
+    def _on_phrase_regenerated(self, text: str) -> None:
+        self.add_dish_screen.set_phrase(text)
+        self.add_dish_screen.finish_phrase_generation(success=True)
+
+    def _on_phrase_generation_finished(self) -> None:
+        # Safety net: never keep add-dish screen stuck in disabled "in progress" state.
+        if self.add_dish_screen.is_phrase_generation_in_progress():
+            self.add_dish_screen.set_phrase_generation_in_progress(False)
 
     def _on_confirm_dish(self, payload: dict) -> None:
         self.controller.create_dish(payload, on_result=self._on_dish_created)
@@ -288,6 +298,11 @@ class MainWindow(QMainWindow):
             self.today_menu_screen.set_saving(False)
             self.today_menu_screen.notify_error(text)
             self.today_menu_screen.set_status("Не удалось сохранить today menu. Исправьте проблему и повторите.")
+            return
+
+        if current is self.add_dish_screen and self.add_dish_screen.is_phrase_generation_in_progress():
+            self.add_dish_screen.finish_phrase_generation(success=False)
+            QMessageBox.warning(self, "Генерация фразы", text)
             return
 
         QMessageBox.critical(self, "Ошибка", text)

@@ -39,6 +39,7 @@ class AppController(QObject):
     recognition_finished = Signal(object)
     operation_error = Signal(str)
     operation_progress = Signal(str)
+    phrase_generation_finished = Signal()
     menu_loaded = Signal(object)
 
     def __init__(self) -> None:
@@ -253,9 +254,13 @@ class AppController(QObject):
             self._emit_entrypoint_error("Не удалось сгенерировать фразу: укажите категорию блюда.")
             return
 
-        # Heavy Qwen init intentionally stays inside worker callable to keep UI thread responsive.
-        def _fn(**kwargs: Any) -> str:
+        # Lazy first Qwen init may be long; we emit explicit phases from worker thread.
+        def _fn(progress_callback: Callable[[str], None] | None = None, **kwargs: Any) -> str:
+            if progress_callback:
+                progress_callback("Подготавливаю Qwen...")
             qwen = self._model_registry.get_qwen()
+            if progress_callback:
+                progress_callback("Генерирую фразу...")
             return qwen.generate_short_dish_phrase(**kwargs)
 
         worker = PhraseGenerationWorker(
@@ -264,6 +269,7 @@ class AppController(QObject):
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
+        worker.finished.connect(self.phrase_generation_finished)
         self._runner.run(worker)
 
     def create_dish(self, payload: dict[str, Any], on_result: Callable[[object], None]) -> None:
