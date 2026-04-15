@@ -6,6 +6,7 @@ Heavy operations are moved off the UI thread via QObject+QThread pattern.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,6 +44,10 @@ class BaseWorker(QObject):
     error = Signal(str)
     progress = Signal(str)
 
+    def _emit_run_started(self) -> None:
+        """Early lifecycle trace: proves that thread reached worker.run()."""
+        self.progress.emit(f"[worker] {self.__class__.__name__}.run() started")
+
 
 class RecognitionWorker(BaseWorker):
     """Runs recognition orchestrator on a BGR frame in background thread."""
@@ -57,6 +62,7 @@ class RecognitionWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             self.progress.emit("Запускаю распознавание...")
             output = self._orchestrator.recognize(self._image)
             self.result.emit(output)
@@ -78,6 +84,7 @@ class ModelWarmupWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             self.progress.emit("Подготавливаю модели...")
             self._warmup_fn()
             self.result.emit(True)
@@ -100,6 +107,8 @@ class PhraseGenerationWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            # Explicit earliest trace for P0 diagnostics: worker reached run() entry.
+            self._emit_run_started()
             # Worker can now stream phased status updates to UI (warmup/generation).
             phrase = self._task.fn(progress_callback=self.progress.emit, **self._task.kwargs)
             self.result.emit(str(phrase))
@@ -122,6 +131,7 @@ class CreateDishWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             self.progress.emit("Сохраняю блюдо...")
             # Heavy repository/index init intentionally happens in worker thread.
             repository = self._repository_factory()
@@ -148,6 +158,7 @@ class UpdateDishWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             self.progress.emit("Обновляю карточку блюда...")
             # Heavy repository/index init intentionally happens in worker thread.
             repository = self._repository_factory()
@@ -173,6 +184,7 @@ class ConfirmPhraseWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             self.progress.emit("Подтверждаю фразу...")
             # Heavy regenerator/index init intentionally happens in worker thread.
             regenerator = self._regenerator_factory()
@@ -197,6 +209,7 @@ class SetTodayMenuWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             # Heavy today service/index init intentionally happens in worker thread.
             service = self._service_factory()
             for category, slugs in self._mapping.items():
@@ -223,6 +236,7 @@ class QueryMenuWorker(BaseWorker):
     @Slot()
     def run(self) -> None:
         try:
+            self._emit_run_started()
             rows = self._task.fn(**self._task.kwargs)
             self.result.emit(rows)
         except Exception as exc:  # noqa: BLE001
@@ -236,7 +250,13 @@ class WorkerRunner(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._threads: list[QThread] = []
+        # Keep strong refs to BOTH thread and worker until thread is fully finished.
+        # Qt signal wiring alone is not a safe Python lifetime anchor for worker objects.
+        self._active_jobs: dict[QThread, BaseWorker] = {}
+
+    def _cleanup_job(self, thread: QThread) -> None:
+        """Release strong refs after Qt reports thread shutdown is complete."""
+        self._active_jobs.pop(thread, None)
 
     def run(self, worker: BaseWorker, started_slot: str = "run") -> QThread:
         thread = QThread()
@@ -245,8 +265,10 @@ class WorkerRunner(QObject):
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
-        self._threads.append(thread)
+        # Cleanup happens only after thread finished to avoid dropping worker too early.
+        thread.finished.connect(partial(self._cleanup_job, thread))
+
+        self._active_jobs[thread] = worker
         thread.start()
         return thread
 
