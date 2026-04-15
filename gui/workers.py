@@ -89,7 +89,7 @@ class ModelWarmupWorker(BaseWorker):
 
 
 class PhraseGenerationWorker(BaseWorker):
-    """Regenerates phrase by direct image+meta call to Qwen adapter."""
+    """Regenerates phrase by lazy image+meta callable in background thread."""
 
     result = Signal(str)
 
@@ -110,20 +110,22 @@ class PhraseGenerationWorker(BaseWorker):
 
 
 class CreateDishWorker(BaseWorker):
-    """Creates a global menu dish (and embeddings/index updates via repository)."""
+    """Creates a global menu dish with repository resolved lazily inside worker thread."""
 
     result = Signal(object)
 
-    def __init__(self, repository: MenuRepository, payload: dict[str, Any]) -> None:
+    def __init__(self, repository_factory: Callable[[], MenuRepository], payload: dict[str, Any]) -> None:
         super().__init__()
-        self._repository = repository
+        self._repository_factory = repository_factory
         self._payload = payload
 
     @Slot()
     def run(self) -> None:
         try:
             self.progress.emit("Сохраняю блюдо...")
-            dish = self._repository.create_dish(**self._payload)
+            # Heavy repository/index init intentionally happens in worker thread.
+            repository = self._repository_factory()
+            dish = repository.create_dish(**self._payload)
             self.result.emit(dish)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(_format_worker_error(exc))
@@ -136,9 +138,9 @@ class UpdateDishWorker(BaseWorker):
 
     result = Signal(object)
 
-    def __init__(self, repository: MenuRepository, category: str, slug_or_name: str, patch: dict[str, Any]) -> None:
+    def __init__(self, repository_factory: Callable[[], MenuRepository], category: str, slug_or_name: str, patch: dict[str, Any]) -> None:
         super().__init__()
-        self._repository = repository
+        self._repository_factory = repository_factory
         self._category = category
         self._slug_or_name = slug_or_name
         self._patch = patch
@@ -147,7 +149,9 @@ class UpdateDishWorker(BaseWorker):
     def run(self) -> None:
         try:
             self.progress.emit("Обновляю карточку блюда...")
-            dish = self._repository.update_dish(self._category, self._slug_or_name, **self._patch)
+            # Heavy repository/index init intentionally happens in worker thread.
+            repository = self._repository_factory()
+            dish = repository.update_dish(self._category, self._slug_or_name, **self._patch)
             self.result.emit(dish)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(_format_worker_error(exc))
@@ -156,13 +160,13 @@ class UpdateDishWorker(BaseWorker):
 
 
 class ConfirmPhraseWorker(BaseWorker):
-    """Persists phrase to dish folder and rebuilds phrase embedding if configured."""
+    """Persists phrase with regenerator resolved lazily inside worker thread."""
 
     result = Signal(object)
 
-    def __init__(self, regenerator: PhraseRegenerator, dish_dir: str | Path, phrase: str) -> None:
+    def __init__(self, regenerator_factory: Callable[[], PhraseRegenerator], dish_dir: str | Path, phrase: str) -> None:
         super().__init__()
-        self._regenerator = regenerator
+        self._regenerator_factory = regenerator_factory
         self._dish_dir = dish_dir
         self._phrase = phrase
 
@@ -170,7 +174,9 @@ class ConfirmPhraseWorker(BaseWorker):
     def run(self) -> None:
         try:
             self.progress.emit("Подтверждаю фразу...")
-            saved_path = self._regenerator.confirm_phrase_for_dish(self._dish_dir, self._phrase)
+            # Heavy regenerator/index init intentionally happens in worker thread.
+            regenerator = self._regenerator_factory()
+            saved_path = regenerator.confirm_phrase_for_dish(self._dish_dir, self._phrase)
             self.result.emit(str(saved_path))
         except Exception as exc:  # noqa: BLE001
             self.error.emit(_format_worker_error(exc))
@@ -179,23 +185,25 @@ class ConfirmPhraseWorker(BaseWorker):
 
 
 class SetTodayMenuWorker(BaseWorker):
-    """Saves today dishes per category and rebuilds today indexes."""
+    """Saves today dishes and rebuilds indexes with lazy service resolution in worker thread."""
 
     result = Signal(object)
 
-    def __init__(self, service: TodayMenuService, mapping: dict[str, list[str]]) -> None:
+    def __init__(self, service_factory: Callable[[], TodayMenuService], mapping: dict[str, list[str]]) -> None:
         super().__init__()
-        self._service = service
+        self._service_factory = service_factory
         self._mapping = mapping
 
     @Slot()
     def run(self) -> None:
         try:
+            # Heavy today service/index init intentionally happens in worker thread.
+            service = self._service_factory()
             for category, slugs in self._mapping.items():
                 self.progress.emit(f"Сохраняю category={category}...")
-                self._service.set_today_dishes(category, slugs)
+                service.set_today_dishes(category, slugs)
             self.progress.emit("Пересобираю индексы today menu...")
-            indexes = self._service.rebuild_today_indexes()
+            indexes = service.rebuild_today_indexes()
             self.result.emit({"indexes": indexes})
         except Exception as exc:  # noqa: BLE001
             self.error.emit(_format_worker_error(exc))

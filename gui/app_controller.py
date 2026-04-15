@@ -244,24 +244,22 @@ class AppController(QObject):
         if image is None:
             self._emit_entrypoint_error("Не удалось сгенерировать фразу: отсутствует crop изображения.")
             return
-        if not dish_name.strip():
+        dish_name = dish_name.strip()
+        category = category.strip()
+        if not dish_name:
             self._emit_entrypoint_error("Не удалось сгенерировать фразу: укажите название блюда.")
             return
-        if not category.strip():
+        if not category:
             self._emit_entrypoint_error("Не удалось сгенерировать фразу: укажите категорию блюда.")
             return
 
-        try:
-            qwen = self._model_registry.get_qwen()
-        except Exception as exc:  # noqa: BLE001
-            self._emit_entrypoint_error(f"Не удалось инициализировать генератор фраз: {exc}")
-            return
-
+        # Heavy Qwen init intentionally stays inside worker callable to keep UI thread responsive.
         def _fn(**kwargs: Any) -> str:
+            qwen = self._model_registry.get_qwen()
             return qwen.generate_short_dish_phrase(**kwargs)
 
         worker = PhraseGenerationWorker(
-            WorkerTask(fn=_fn, kwargs={"image": image, "dish_name": dish_name.strip(), "category": category.strip()})
+            WorkerTask(fn=_fn, kwargs={"image": image, "dish_name": dish_name, "category": category})
         )
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
@@ -282,13 +280,7 @@ class AppController(QObject):
             self._emit_entrypoint_error("Не удалось создать блюдо: отсутствует crop изображения.")
             return
 
-        try:
-            repository = self._require_heavy_menu_repository()
-        except Exception as exc:  # noqa: BLE001
-            self._emit_entrypoint_error(str(exc))
-            return
-
-        worker = CreateDishWorker(repository, payload)
+        worker = CreateDishWorker(repository_factory=self._require_heavy_menu_repository, payload=payload)
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -301,13 +293,12 @@ class AppController(QObject):
         is_active: bool,
         on_result: Callable[[object], None],
     ) -> None:
-        try:
-            repository = self._require_heavy_menu_repository()
-        except Exception as exc:  # noqa: BLE001
-            self._emit_entrypoint_error(str(exc))
-            return
-
-        worker = UpdateDishWorker(repository, category, slug_or_name, {"is_active": is_active})
+        worker = UpdateDishWorker(
+            repository_factory=self._require_heavy_menu_repository,
+            category=category,
+            slug_or_name=slug_or_name,
+            patch={"is_active": is_active},
+        )
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -317,17 +308,16 @@ class AppController(QObject):
         if not str(dish_dir).strip():
             self._emit_entrypoint_error("Не удалось подтвердить фразу: не задан путь к блюду.")
             return
-        if not phrase.strip():
+        phrase = phrase.strip()
+        if not phrase:
             self._emit_entrypoint_error("Не удалось подтвердить фразу: пустая фраза.")
             return
 
-        try:
-            regenerator = self._require_phrase_regenerator()
-        except Exception as exc:  # noqa: BLE001
-            self._emit_entrypoint_error(str(exc))
-            return
-
-        worker = ConfirmPhraseWorker(regenerator, dish_dir, phrase.strip())
+        worker = ConfirmPhraseWorker(
+            regenerator_factory=self._require_phrase_regenerator,
+            dish_dir=dish_dir,
+            phrase=phrase,
+        )
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -388,13 +378,7 @@ class AppController(QObject):
         self._runner.run(worker)
 
     def set_today_menu(self, mapping: dict[str, list[str]], on_result: Callable[[object], None]) -> None:
-        try:
-            service = self._require_today_menu_service_heavy()
-        except Exception as exc:  # noqa: BLE001
-            self._emit_entrypoint_error(str(exc))
-            return
-
-        worker = SetTodayMenuWorker(service, mapping)
+        worker = SetTodayMenuWorker(service_factory=self._require_today_menu_service_heavy, mapping=mapping)
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
