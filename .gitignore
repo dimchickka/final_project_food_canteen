@@ -5,6 +5,7 @@ __pycache__/
 venv/
 data/logs/
 data/cache/
+models/
 *.pt
 *.pth
 *.onnx

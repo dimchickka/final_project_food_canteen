@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QDialog,
 )
 
 from config.constants import DISH_CATEGORIES
@@ -98,7 +99,7 @@ class AddDishScreen(QWidget):
 
     def _load_from_camera(self) -> None:
         dlg = CameraCaptureDialog(self)
-        if dlg.exec() != dlg.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         frame = dlg.captured_frame()
         if frame is None:
@@ -113,7 +114,7 @@ class AddDishScreen(QWidget):
         if self._source_image is None:
             return
         dlg = BBoxEditorDialog(self._source_image, self)
-        if dlg.exec() != dlg.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             return
         self._crop_image = dlg.selected_crop
         if self._crop_image is not None:

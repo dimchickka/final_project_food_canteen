@@ -18,7 +18,7 @@ YOLO_MEAT_WEIGHTS: Path = MODELS_DIR / "yolo" / "yolo_meat.pt"
 YOLO_MEAT_SAUCE_WEIGHTS: Path = MODELS_DIR / "yolo" / "yolo_meat_sauce.pt"
 
 # Qwen local model directory / checkpoint path.
-QWEN_MODEL_PATH: Path = MODELS_DIR / "qwen" / "qwen2.5-vl-4b-instruct"
+QWEN_MODEL_PATH: Path = Path("D:/.ml_cache/Qwen/Qwen3-VL-4B-Instruct")
 
 # CLIP may be local path or model id from provider (e.g., Hugging Face).
-CLIP_MODEL_NAME_OR_PATH: str = "openai/clip-vit-large-patch14"
+CLIP_MODEL_NAME_OR_PATH: str = str(MODELS_DIR / "clip")

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QDialog,
 )
 
 from config.settings import TEST_RECOGNITION
@@ -142,7 +143,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Камера", str(exc))
             return
-        if dialog.exec() != dialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         frame = dialog.captured_frame()
         if frame is None:
@@ -170,7 +171,7 @@ class MainWindow(QMainWindow):
             self._show(self.admin_panel_screen)
             return
         dialog = AdminLoginDialog(self)
-        if dialog.exec() == dialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self._show(self.admin_panel_screen)
 
     def _on_regenerate_phrase(self, image, dish_name: str, category: str) -> None:
