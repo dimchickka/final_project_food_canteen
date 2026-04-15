@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
 
         self.controller = AppController()
+        self._today_menu_save_in_progress = False
         self._build_ui()
         self._connect_controller_signals()
 
@@ -101,7 +102,9 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(widget)
 
     def _go_home(self) -> None:
-        self.recognition_screen.stop_processing()
+        self.recognition_screen.reset_state()
+        self._today_menu_save_in_progress = False
+        self.today_menu_screen.set_saving(False)
         self._show(self.home_screen)
 
     def _on_start_recognition(self) -> None:
@@ -110,6 +113,7 @@ class MainWindow(QMainWindow):
             # Guard transition: do not open processing screen when preflight failed.
             QMessageBox.information(self, "Распознавание недоступно", reason)
             self.home_screen.set_status(reason)
+            self.recognition_screen.reset_state()
             self._show(self.home_screen)
             return
 
@@ -137,8 +141,9 @@ class MainWindow(QMainWindow):
             self._show(self.recognition_screen)
             self.controller.start_recognition_from_file(path)
         except Exception as exc:  # noqa: BLE001
+            self.recognition_screen.reset_state()
             QMessageBox.critical(self, "Распознавание", f"Не удалось запустить распознавание: {exc}")
-            self._go_home()
+            self._show(self.home_screen)
 
     def _start_recognition_from_camera(self) -> None:
         try:
@@ -158,19 +163,23 @@ class MainWindow(QMainWindow):
             self._show(self.recognition_screen)
             self.controller.start_recognition_from_camera_frame(frame)
         except Exception as exc:  # noqa: BLE001
+            self.recognition_screen.reset_state()
             QMessageBox.critical(self, "Распознавание", f"Не удалось запустить распознавание: {exc}")
-            self._go_home()
+            self._show(self.home_screen)
 
     def _on_recognition_done(self, result) -> None:
         self.recognition_screen.stop_processing()
         if not getattr(result, "success", False):
-            reason = getattr(result, "abort_reason", None) or "Неизвестная ошибка"
+            # Recognition abort/error must return GUI to stable state instead of endless loading screen.
+            reason = getattr(result, "abort_reason", None) or "Операция прервана"
             QMessageBox.warning(self, "Распознавание", f"Распознавание не завершено: {reason}")
-            self._go_home()
+            self.recognition_screen.reset_state()
+            self._show(self.home_screen)
             return
 
         rows = aggregate_recognition_rows(result)
         self.result_screen.set_result(rows, getattr(result, "total_time_ms", None))
+        self.recognition_screen.reset_state()
         self._show(self.result_screen)
 
     def _on_admin_entry(self) -> None:
@@ -196,6 +205,8 @@ class MainWindow(QMainWindow):
         ready, reason = self.controller.check_menu_admin_ready()
         if not ready:
             QMessageBox.critical(self, "Global menu", reason)
+            self.admin_panel_screen.set_status(reason)
+            self._show(self.admin_panel_screen)
             return
 
         # Empty global menu is valid; we still open the screen and show empty list.
@@ -223,9 +234,12 @@ class MainWindow(QMainWindow):
         ready, reason = self.controller.check_menu_admin_ready()
         if not ready:
             QMessageBox.critical(self, "Today menu", reason)
+            self.admin_panel_screen.set_status(reason)
+            self._show(self.admin_panel_screen)
             return
 
         # Empty today menu is valid; screen must open with empty selected list.
+        self.today_menu_screen.set_saving(False)
         self.today_menu_screen.set_status("Загружаю today menu...")
         self._show(self.today_menu_screen)
         category = self.today_menu_screen.category_combo.currentText()
@@ -242,7 +256,14 @@ class MainWindow(QMainWindow):
         )
 
     def _save_today_menu(self, payload: dict) -> None:
-        self.controller.set_today_menu(payload, on_result=lambda _: self.today_menu_screen.notify("Today menu сохранено."))
+        self._today_menu_save_in_progress = True
+        self.today_menu_screen.set_saving(True)
+        self.controller.set_today_menu(payload, on_result=self._on_today_menu_saved)
+
+    def _on_today_menu_saved(self, _result: object) -> None:
+        self._today_menu_save_in_progress = False
+        self.today_menu_screen.set_saving(False)
+        self.today_menu_screen.notify("Today menu сохранено.")
 
     def _on_controller_progress(self, text: str) -> None:
         if self.stack.currentWidget() is self.recognition_screen:
@@ -253,7 +274,20 @@ class MainWindow(QMainWindow):
             self.today_menu_screen.set_status(text)
 
     def _on_controller_error(self, text: str) -> None:
-        QMessageBox.critical(self, "Ошибка", text)
-        if self.stack.currentWidget() is self.recognition_screen:
+        current = self.stack.currentWidget()
+
+        if current is self.recognition_screen:
             self.recognition_screen.show_error(text)
-            self._go_home()
+            QMessageBox.critical(self, "Распознавание", text)
+            self.recognition_screen.reset_state()
+            self._show(self.home_screen)
+            return
+
+        if current is self.today_menu_screen and self._today_menu_save_in_progress:
+            self._today_menu_save_in_progress = False
+            self.today_menu_screen.set_saving(False)
+            self.today_menu_screen.notify_error(text)
+            self.today_menu_screen.set_status("Не удалось сохранить today menu. Исправьте проблему и повторите.")
+            return
+
+        QMessageBox.critical(self, "Ошибка", text)

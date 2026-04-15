@@ -152,12 +152,19 @@ class AppController(QObject):
             self._menu_repository_light = MenuRepository(menu_root=self._global_menu_root, index_builder=None)
         return self._menu_repository_light
 
-    def _get_menu_repository_heavy(self) -> MenuRepository:
+    def _require_index_builder(self) -> MenuIndexBuilder:
+        """Controller-level centralized heavy service access for deterministic entrypoints."""
+        try:
+            return self._get_index_builder()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Не удалось инициализировать индексатор меню: {exc}") from exc
+
+    def _require_heavy_menu_repository(self) -> MenuRepository:
+        """Controller-level centralized heavy service access for deterministic entrypoints."""
         if self._menu_repository_heavy is None:
-            # Heavy path keeps index builder attached for embedding/index updates on write actions.
             self._menu_repository_heavy = MenuRepository(
                 menu_root=self._global_menu_root,
-                index_builder=self._get_index_builder(),
+                index_builder=self._require_index_builder(),
             )
         return self._menu_repository_heavy
 
@@ -171,23 +178,28 @@ class AppController(QObject):
             )
         return self._today_menu_service_light
 
-    def _get_today_menu_service_heavy(self) -> TodayMenuService:
+    def _require_today_menu_service_heavy(self) -> TodayMenuService:
+        """Controller-level centralized heavy service access for deterministic entrypoints."""
         if self._today_menu_service_heavy is None:
             self._today_menu_service_heavy = TodayMenuService(
                 global_menu_root=self._global_menu_root,
                 today_menu_root=self._today_menu_root,
-                index_builder=self._get_index_builder(),
+                index_builder=self._require_index_builder(),
             )
         return self._today_menu_service_heavy
 
-    def _get_phrase_regenerator(self) -> PhraseRegenerator:
+    def _require_phrase_regenerator(self) -> PhraseRegenerator:
+        """Controller-level centralized heavy service access for deterministic entrypoints."""
         if self._phrase_regenerator is None:
             self._phrase_regenerator = PhraseRegenerator(
                 menu_root=self._global_menu_root,
                 model_registry=self._model_registry,
-                index_builder=self._get_index_builder(),
+                index_builder=self._require_index_builder(),
             )
         return self._phrase_regenerator
+
+    def _emit_entrypoint_error(self, message: str) -> None:
+        self.operation_error.emit(message)
 
     def ensure_models_ready_if_needed(self, on_done: Callable[[bool], None] | None = None) -> None:
         if self._models_ready:
@@ -208,10 +220,20 @@ class AppController(QObject):
         self._models_ready = True
 
     def start_recognition_from_file(self, path: str | Path) -> None:
-        image = ImageLoader.ensure_image_loaded(path)
+        ready, reason = self.check_recognition_ready()
+        if not ready:
+            raise RuntimeError(reason)
+        try:
+            image = ImageLoader.ensure_image_loaded(path)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Не удалось загрузить изображение: {exc}") from exc
         self.start_recognition_from_camera_frame(image)
 
     def start_recognition_from_camera_frame(self, frame: np.ndarray) -> None:
+        ready, reason = self.check_recognition_ready()
+        if not ready:
+            raise RuntimeError(reason)
+
         worker = RecognitionWorker(self._orchestrator, frame)
         worker.progress.connect(self.recognition_progress)
         worker.error.connect(self.operation_error)
@@ -219,13 +241,27 @@ class AppController(QObject):
         self._runner.run(worker)
 
     def regenerate_phrase(self, image: np.ndarray, dish_name: str, category: str, on_result: Callable[[str], None]) -> None:
-        qwen = self._model_registry.get_qwen()
+        if image is None:
+            self._emit_entrypoint_error("Не удалось сгенерировать фразу: отсутствует crop изображения.")
+            return
+        if not dish_name.strip():
+            self._emit_entrypoint_error("Не удалось сгенерировать фразу: укажите название блюда.")
+            return
+        if not category.strip():
+            self._emit_entrypoint_error("Не удалось сгенерировать фразу: укажите категорию блюда.")
+            return
+
+        try:
+            qwen = self._model_registry.get_qwen()
+        except Exception as exc:  # noqa: BLE001
+            self._emit_entrypoint_error(f"Не удалось инициализировать генератор фраз: {exc}")
+            return
 
         def _fn(**kwargs: Any) -> str:
             return qwen.generate_short_dish_phrase(**kwargs)
 
         worker = PhraseGenerationWorker(
-            WorkerTask(fn=_fn, kwargs={"image": image, "dish_name": dish_name, "category": category})
+            WorkerTask(fn=_fn, kwargs={"image": image, "dish_name": dish_name.strip(), "category": category.strip()})
         )
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
@@ -233,11 +269,25 @@ class AppController(QObject):
         self._runner.run(worker)
 
     def create_dish(self, payload: dict[str, Any], on_result: Callable[[object], None]) -> None:
-        try:
-            repository = self._get_menu_repository_heavy()
-        except Exception as exc:  # noqa: BLE001
-            self.operation_error.emit(f"Не удалось инициализировать global menu сервис: {exc}")
+        name = str(payload.get("name", "")).strip()
+        category = str(payload.get("category", "")).strip()
+        crop_image = payload.get("crop_image")
+        if not name:
+            self._emit_entrypoint_error("Не удалось создать блюдо: пустое название.")
             return
+        if not category:
+            self._emit_entrypoint_error("Не удалось создать блюдо: не выбрана категория.")
+            return
+        if crop_image is None:
+            self._emit_entrypoint_error("Не удалось создать блюдо: отсутствует crop изображения.")
+            return
+
+        try:
+            repository = self._require_heavy_menu_repository()
+        except Exception as exc:  # noqa: BLE001
+            self._emit_entrypoint_error(str(exc))
+            return
+
         worker = CreateDishWorker(repository, payload)
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
@@ -252,10 +302,11 @@ class AppController(QObject):
         on_result: Callable[[object], None],
     ) -> None:
         try:
-            repository = self._get_menu_repository_heavy()
+            repository = self._require_heavy_menu_repository()
         except Exception as exc:  # noqa: BLE001
-            self.operation_error.emit(f"Не удалось инициализировать global menu сервис: {exc}")
+            self._emit_entrypoint_error(str(exc))
             return
+
         worker = UpdateDishWorker(repository, category, slug_or_name, {"is_active": is_active})
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
@@ -263,13 +314,20 @@ class AppController(QObject):
         self._runner.run(worker)
 
     def confirm_phrase(self, dish_dir: str | Path, phrase: str, on_result: Callable[[object], None]) -> None:
-        try:
-            regenerator = self._get_phrase_regenerator()
-        except Exception as exc:  # noqa: BLE001
-            self.operation_error.emit(f"Не удалось инициализировать phrase сервис: {exc}")
+        if not str(dish_dir).strip():
+            self._emit_entrypoint_error("Не удалось подтвердить фразу: не задан путь к блюду.")
+            return
+        if not phrase.strip():
+            self._emit_entrypoint_error("Не удалось подтвердить фразу: пустая фраза.")
             return
 
-        worker = ConfirmPhraseWorker(regenerator, dish_dir, phrase)
+        try:
+            regenerator = self._require_phrase_regenerator()
+        except Exception as exc:  # noqa: BLE001
+            self._emit_entrypoint_error(str(exc))
+            return
+
+        worker = ConfirmPhraseWorker(regenerator, dish_dir, phrase.strip())
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -331,9 +389,9 @@ class AppController(QObject):
 
     def set_today_menu(self, mapping: dict[str, list[str]], on_result: Callable[[object], None]) -> None:
         try:
-            service = self._get_today_menu_service_heavy()
+            service = self._require_today_menu_service_heavy()
         except Exception as exc:  # noqa: BLE001
-            self.operation_error.emit(f"Не удалось инициализировать today menu сервис: {exc}")
+            self._emit_entrypoint_error(str(exc))
             return
 
         worker = SetTodayMenuWorker(service, mapping)

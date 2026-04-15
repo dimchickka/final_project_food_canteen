@@ -32,6 +32,7 @@ class TodayMenuScreen(QWidget):
         super().__init__(parent)
         self._selected: dict[str, set[str]] = {cat: set() for cat in DISH_CATEGORIES}
         self._current_rows: list[dict[str, Any]] = []
+        self._is_saving = False
 
         root = QVBoxLayout(self)
 
@@ -81,7 +82,26 @@ class TodayMenuScreen(QWidget):
         self.save_btn.clicked.connect(self._save)
         self.back_btn.clicked.connect(self.back_requested)
 
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        self.category_combo.setEnabled(enabled)
+        self.reload_btn.setEnabled(enabled)
+        self.available.setEnabled(enabled)
+        self.selected.setEnabled(enabled)
+        self.add_btn.setEnabled(enabled)
+        self.remove_btn.setEnabled(enabled)
+        self.save_btn.setEnabled(enabled)
+
+    def set_saving(self, is_saving: bool) -> None:
+        self._is_saving = is_saving
+        # Today menu save/rebuild is heavy worker action; disable list edits during save for consistency.
+        self._set_controls_enabled(not is_saving)
+        self.back_btn.setEnabled(not is_saving)
+        if is_saving:
+            self.status.setText("Сохраняю today menu и пересобираю индексы...")
+
     def _reload(self) -> None:
+        if self._is_saving:
+            return
         self.load_for_category_requested.emit(self.category_combo.currentText())
 
     def set_available_rows(self, rows: list[dict[str, Any]]) -> None:
@@ -104,6 +124,8 @@ class TodayMenuScreen(QWidget):
         self.status.setText(f"Категория {category}: доступно {self.available.count()}, выбрано {self.selected.count()}.")
 
     def _add_selected(self) -> None:
+        if self._is_saving:
+            return
         category = self.category_combo.currentText()
         for item in self.available.selectedItems():
             slug = str(item.data(256))
@@ -111,6 +133,8 @@ class TodayMenuScreen(QWidget):
         self.set_available_rows(self._current_rows)
 
     def _remove_selected(self) -> None:
+        if self._is_saving:
+            return
         category = self.category_combo.currentText()
         for item in self.selected.selectedItems():
             slug = str(item.data(256))
@@ -118,6 +142,8 @@ class TodayMenuScreen(QWidget):
         self.set_available_rows(self._current_rows)
 
     def _save(self) -> None:
+        if self._is_saving:
+            return
         payload = {cat: sorted(list(values)) for cat, values in self._selected.items()}
         self.save_requested.emit(payload)
 
@@ -136,3 +162,6 @@ class TodayMenuScreen(QWidget):
 
     def notify(self, text: str) -> None:
         QMessageBox.information(self, "Today menu", text)
+
+    def notify_error(self, text: str) -> None:
+        QMessageBox.critical(self, "Today menu", text)

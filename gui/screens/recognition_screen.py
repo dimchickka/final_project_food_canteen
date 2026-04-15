@@ -26,20 +26,26 @@ class RecognitionScreen(QWidget):
         root.addWidget(self.status, alignment=Qt.AlignCenter)
 
         self.overlay = LoadingOverlay(parent=self)
+        self._is_processing = False
 
     def start_processing(self, message: str = "Идёт распознавание...") -> None:
+        self._is_processing = True
         self.status.setText(message)
         self.overlay.show_loading(message)
 
     def set_status(self, message: str) -> None:
         self.status.setText(message)
-        self.overlay.set_message(message)
+        if self._is_processing:
+            self.overlay.set_message(message)
 
     def stop_processing(self) -> None:
+        self._is_processing = False
         self.overlay.hide_loading()
-        if not self.status.text().startswith("Ошибка"):
-            self.status.setText("Ожидание запуска...")
+
+    def reset_state(self, message: str = "Ожидание запуска...") -> None:
+        # Recognition abort/error must always return this screen to stable non-loading state.
+        self.stop_processing()
+        self.status.setText(message)
 
     def show_error(self, text: str) -> None:
-        self.status.setText(f"Ошибка: {text}")
-        self.overlay.hide_loading()
+        self.reset_state(f"Ошибка: {text}")

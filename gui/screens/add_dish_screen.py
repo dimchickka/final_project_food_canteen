@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Callable
-
 import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -92,6 +90,7 @@ class AddDishScreen(QWidget):
         try:
             self._source_image = ImageLoader.ensure_image_loaded(path)
             self._crop_image = None
+            self.phrase_text.clear()
             self.bbox_btn.setEnabled(True)
             self.status.setText("Изображение загружено. Откройте bbox editor.")
         except Exception as exc:  # noqa: BLE001
@@ -116,11 +115,13 @@ class AddDishScreen(QWidget):
 
         self._source_image = frame
         self._crop_image = None
+        self.phrase_text.clear()
         self.bbox_btn.setEnabled(True)
         self.status.setText("Кадр получен. Откройте bbox editor.")
 
     def _open_bbox_editor(self) -> None:
         if self._source_image is None:
+            QMessageBox.warning(self, "BBox", "Сначала загрузите исходное изображение.")
             return
 
         dlg = BBoxEditorDialog(self._source_image, self)
@@ -133,40 +134,77 @@ class AddDishScreen(QWidget):
             QMessageBox.warning(self, "BBox", "Не удалось получить crop из bbox editor.")
             return
 
+        self.phrase_text.clear()
         self.status.setText("Crop сохранён. Можно регенерировать фразу и подтвердить блюдо.")
 
-    def _on_regenerate_phrase(self) -> None:
+    def _validate_for_phrase_regeneration(self) -> tuple[bool, str, str, str]:
         if self._crop_image is None:
-            QMessageBox.warning(self, "Фраза", "Сначала выделите bbox/crop.")
-            return
+            # Deliberately block heavy regeneration until required state is complete.
+            return False, "Сначала выделите bbox/crop.", "", ""
         name = self.name_input.text().strip()
-        category = self.category_combo.currentText()
         if not name:
-            QMessageBox.warning(self, "Фраза", "Введите название блюда перед генерацией.")
+            return False, "Сначала заполните название блюда.", "", ""
+        category = self.category_combo.currentText().strip()
+        if not category:
+            return False, "Сначала выберите категорию блюда.", "", ""
+        return True, "", name, category
+
+    def _validate_for_confirm(self) -> tuple[bool, str, str, str, str]:
+        if self._source_image is None:
+            # Deliberately block heavy create action until required state is complete.
+            return False, "Сначала загрузите исходное изображение блюда.", "", "", ""
+        if self._crop_image is None:
+            return False, "Сначала выделите bbox/crop.", "", "", ""
+
+        name = self.name_input.text().strip()
+        if not name:
+            return False, "Название блюда обязательно.", "", "", ""
+
+        category = self.category_combo.currentText().strip()
+        if not category:
+            return False, "Категория блюда обязательна.", "", "", ""
+
+        phrase = self.phrase_text.toPlainText().strip()
+        if not phrase:
+            return (
+                False,
+                "Фраза пустая. Нажмите «Регенерировать фразу», затем повторите подтверждение.",
+                "",
+                "",
+                "",
+            )
+
+        return True, "", name, category, phrase
+
+    def _on_regenerate_phrase(self) -> None:
+        is_valid, error_text, name, category = self._validate_for_phrase_regeneration()
+        if not is_valid:
+            QMessageBox.warning(self, "Фраза", error_text)
+            self.status.setText(error_text)
             return
+
+        self.status.setText("Запрос генерации фразы отправлен...")
         self.regenerate_phrase_requested.emit(self._crop_image, name, category)
 
     def _on_confirm(self) -> None:
-        if self._crop_image is None:
-            QMessageBox.warning(self, "Сохранение", "Сначала выделите bbox/crop.")
-            return
-        name = self.name_input.text().strip()
-        phrase = self.phrase_text.toPlainText().strip()
-        category = self.category_combo.currentText()
-        if not name:
-            QMessageBox.warning(self, "Сохранение", "Название блюда обязательно.")
+        is_valid, error_text, name, category, phrase = self._validate_for_confirm()
+        if not is_valid:
+            QMessageBox.warning(self, "Сохранение", error_text)
+            self.status.setText(error_text)
             return
 
         payload = {
             "name": name,
             "category": category,
             "crop_image": self._crop_image,
-            "phrase": phrase if phrase else None,
+            "phrase": phrase,
         }
+        self.status.setText("Сохраняю блюдо...")
         self.confirm_dish_requested.emit(payload)
 
     def set_phrase(self, text: str) -> None:
         self.phrase_text.setPlainText(text)
+        self.status.setText("Фраза обновлена. Можно подтвердить блюдо.")
 
     def set_status(self, text: str) -> None:
         self.status.setText(text)

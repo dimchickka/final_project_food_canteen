@@ -20,6 +20,14 @@ from core.menu.today_menu_service import TodayMenuService
 from core.pipeline.recognition_orchestrator import RecognitionOrchestrator
 
 
+def _format_worker_error(exc: Exception) -> str:
+    """Convert internal exceptions to stable user-displayable worker error text."""
+    text = str(exc).strip()
+    if text:
+        return text
+    return f"{exc.__class__.__name__}: операция завершилась с ошибкой"
+
+
 @dataclass(slots=True)
 class WorkerTask:
     """Simple callable wrapper for reusable background tasks."""
@@ -53,7 +61,7 @@ class RecognitionWorker(BaseWorker):
             output = self._orchestrator.recognize(self._image)
             self.result.emit(output)
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 
@@ -74,7 +82,7 @@ class ModelWarmupWorker(BaseWorker):
             self._warmup_fn()
             self.result.emit(True)
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
             self.result.emit(False)
         finally:
             self.finished.emit()
@@ -96,7 +104,7 @@ class PhraseGenerationWorker(BaseWorker):
             phrase = self._task.fn(**self._task.kwargs)
             self.result.emit(str(phrase))
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 
@@ -118,7 +126,7 @@ class CreateDishWorker(BaseWorker):
             dish = self._repository.create_dish(**self._payload)
             self.result.emit(dish)
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 
@@ -142,7 +150,7 @@ class UpdateDishWorker(BaseWorker):
             dish = self._repository.update_dish(self._category, self._slug_or_name, **self._patch)
             self.result.emit(dish)
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 
@@ -165,7 +173,7 @@ class ConfirmPhraseWorker(BaseWorker):
             saved_path = self._regenerator.confirm_phrase_for_dish(self._dish_dir, self._phrase)
             self.result.emit(str(saved_path))
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 
@@ -186,10 +194,11 @@ class SetTodayMenuWorker(BaseWorker):
             for category, slugs in self._mapping.items():
                 self.progress.emit(f"Сохраняю category={category}...")
                 self._service.set_today_dishes(category, slugs)
+            self.progress.emit("Пересобираю индексы today menu...")
             indexes = self._service.rebuild_today_indexes()
             self.result.emit({"indexes": indexes})
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 
@@ -209,7 +218,7 @@ class QueryMenuWorker(BaseWorker):
             rows = self._task.fn(**self._task.kwargs)
             self.result.emit(rows)
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(_format_worker_error(exc))
         finally:
             self.finished.emit()
 

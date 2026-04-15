@@ -21,7 +21,7 @@ class AdminPanelScreen(QWidget):
         title = QLabel("Админ-панель")
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
 
-        self.status = QLabel("")
+        self.status = QLabel("Выберите действие.")
         self.status.setStyleSheet("color: #666;")
 
         self.add_btn = QPushButton("Добавить блюдо")
