@@ -206,7 +206,11 @@ class MainWindow(QMainWindow):
         self._show(self.today_menu_screen)
         category = self.today_menu_screen.category_combo.currentText()
         self._load_today_category(category)
-        self.controller.load_today_menu(None, on_result=lambda rows: self.today_menu_screen.set_today_rows(normalize_menu_rows(rows)))
+        # Explicitly apply saved today selections after async load so current category is redrawn immediately.
+        self.controller.load_today_menu(
+            None,
+            on_result=lambda rows: self.today_menu_screen.set_today_rows(normalize_menu_rows(rows)),
+        )
 
     def _load_today_category(self, category: str) -> None:
         self.controller.load_global_menu(category, on_result=lambda rows: self.today_menu_screen.set_available_rows(normalize_menu_rows(rows)))

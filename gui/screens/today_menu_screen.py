@@ -127,6 +127,9 @@ class TodayMenuScreen(QWidget):
             grouped[str(row.get("category", ""))].add(str(row.get("slug", "")))
         for cat in DISH_CATEGORIES:
             self._selected[cat] = grouped.get(cat, set())
+        # Today rows may arrive after available rows; force refresh of current category view.
+        if self._current_rows:
+            self.set_available_rows(self._current_rows)
 
     def notify(self, text: str) -> None:
         QMessageBox.information(self, "Today menu", text)

@@ -47,18 +47,39 @@ class AppController(QObject):
         self._models_ready = False
 
         self._model_registry = get_model_registry()
-        self._index_builder = MenuIndexBuilder(self._model_registry.get_clip())
-        self._menu_repository = MenuRepository(index_builder=self._index_builder)
-        self._today_menu_service = TodayMenuService(index_builder=self._index_builder)
-        self._phrase_regenerator = PhraseRegenerator(
-            menu_root="data/menu/global",
-            model_registry=self._model_registry,
-            index_builder=self._index_builder,
-        )
+        # Heavy CLIP-dependent services are lazy to avoid blocking UI during startup.
+        self._index_builder: MenuIndexBuilder | None = None
+        self._menu_repository: MenuRepository | None = None
+        self._today_menu_service: TodayMenuService | None = None
+        self._phrase_regenerator: PhraseRegenerator | None = None
         self._orchestrator = RecognitionOrchestrator(
             model_registry=self._model_registry,
             today_menu_root="data/menu/today",
         )
+
+    def _get_index_builder(self) -> MenuIndexBuilder:
+        if self._index_builder is None:
+            self._index_builder = MenuIndexBuilder(self._model_registry.get_clip())
+        return self._index_builder
+
+    def _get_menu_repository(self) -> MenuRepository:
+        if self._menu_repository is None:
+            self._menu_repository = MenuRepository(index_builder=self._get_index_builder())
+        return self._menu_repository
+
+    def _get_today_menu_service(self) -> TodayMenuService:
+        if self._today_menu_service is None:
+            self._today_menu_service = TodayMenuService(index_builder=self._get_index_builder())
+        return self._today_menu_service
+
+    def _get_phrase_regenerator(self) -> PhraseRegenerator:
+        if self._phrase_regenerator is None:
+            self._phrase_regenerator = PhraseRegenerator(
+                menu_root="data/menu/global",
+                model_registry=self._model_registry,
+                index_builder=self._get_index_builder(),
+            )
+        return self._phrase_regenerator
 
     def ensure_models_ready_if_needed(self, on_done: Callable[[bool], None] | None = None) -> None:
         if self._models_ready:
@@ -104,7 +125,7 @@ class AppController(QObject):
         self._runner.run(worker)
 
     def create_dish(self, payload: dict[str, Any], on_result: Callable[[object], None]) -> None:
-        worker = CreateDishWorker(self._menu_repository, payload)
+        worker = CreateDishWorker(self._get_menu_repository(), payload)
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -117,14 +138,14 @@ class AppController(QObject):
         is_active: bool,
         on_result: Callable[[object], None],
     ) -> None:
-        worker = UpdateDishWorker(self._menu_repository, category, slug_or_name, {"is_active": is_active})
+        worker = UpdateDishWorker(self._get_menu_repository(), category, slug_or_name, {"is_active": is_active})
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
         self._runner.run(worker)
 
     def confirm_phrase(self, dish_dir: str | Path, phrase: str, on_result: Callable[[object], None]) -> None:
-        worker = ConfirmPhraseWorker(self._phrase_regenerator, dish_dir, phrase)
+        worker = ConfirmPhraseWorker(self._get_phrase_regenerator(), dish_dir, phrase)
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -132,7 +153,10 @@ class AppController(QObject):
 
     def load_global_menu(self, category: str | None, on_result: Callable[[object], None]) -> None:
         if category and category != "all":
-            task = WorkerTask(fn=self._menu_repository.list_by_category, kwargs={"category": category, "include_inactive": True})
+            task = WorkerTask(
+                fn=self._get_menu_repository().list_by_category,
+                kwargs={"category": category, "include_inactive": True},
+            )
         else:
             task = WorkerTask(fn=self._load_all_categories, kwargs={})
         worker = QueryMenuWorker(task)
@@ -144,7 +168,7 @@ class AppController(QObject):
         kwargs = {"query": query, "include_inactive": True}
         if category and category != "all":
             kwargs["category"] = category
-        worker = QueryMenuWorker(WorkerTask(fn=self._menu_repository.search_dishes, kwargs=kwargs))
+        worker = QueryMenuWorker(WorkerTask(fn=self._get_menu_repository().search_dishes, kwargs=kwargs))
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
         self._runner.run(worker)
@@ -153,13 +177,13 @@ class AppController(QObject):
         kwargs: dict[str, Any] = {}
         if category and category != "all":
             kwargs["category"] = category
-        worker = QueryMenuWorker(WorkerTask(fn=self._today_menu_service.list_today_dishes, kwargs=kwargs))
+        worker = QueryMenuWorker(WorkerTask(fn=self._get_today_menu_service().list_today_dishes, kwargs=kwargs))
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
         self._runner.run(worker)
 
     def set_today_menu(self, mapping: dict[str, list[str]], on_result: Callable[[object], None]) -> None:
-        worker = SetTodayMenuWorker(self._today_menu_service, mapping)
+        worker = SetTodayMenuWorker(self._get_today_menu_service(), mapping)
         worker.progress.connect(self.operation_progress)
         worker.error.connect(self.operation_error)
         worker.result.connect(on_result)
@@ -168,5 +192,5 @@ class AppController(QObject):
     def _load_all_categories(self) -> list[Any]:
         rows: list[Any] = []
         for category in ("beverage", "soup", "portioned", "garnish", "meat", "sauce"):
-            rows.extend(self._menu_repository.list_by_category(category, include_inactive=True))
+            rows.extend(self._get_menu_repository().list_by_category(category, include_inactive=True))
         return rows
