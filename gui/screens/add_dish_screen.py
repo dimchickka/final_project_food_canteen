@@ -98,13 +98,22 @@ class AddDishScreen(QWidget):
             QMessageBox.critical(self, "Загрузка изображения", str(exc))
 
     def _load_from_camera(self) -> None:
-        dlg = CameraCaptureDialog(self)
+        # Ошибка инициализации камеры не должна ронять GUI.
+        try:
+            dlg = CameraCaptureDialog(self)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Камера", str(exc))
+            return
+
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        frame = dlg.captured_frame()
+
+        captured_frame = dlg.captured_frame
+        frame = captured_frame() if callable(captured_frame) else captured_frame
         if frame is None:
             QMessageBox.warning(self, "Камера", "Не удалось получить кадр.")
             return
+
         self._source_image = frame
         self._crop_image = None
         self.bbox_btn.setEnabled(True)
@@ -113,12 +122,18 @@ class AddDishScreen(QWidget):
     def _open_bbox_editor(self) -> None:
         if self._source_image is None:
             return
+
         dlg = BBoxEditorDialog(self._source_image, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+
+        # Сохраняем crop только после явного подтверждения в bbox editor.
         self._crop_image = dlg.selected_crop
-        if self._crop_image is not None:
-            self.status.setText("Crop сохранён. Можно регенерировать фразу и подтвердить блюдо.")
+        if self._crop_image is None:
+            QMessageBox.warning(self, "BBox", "Не удалось получить crop из bbox editor.")
+            return
+
+        self.status.setText("Crop сохранён. Можно регенерировать фразу и подтвердить блюдо.")
 
     def _on_regenerate_phrase(self) -> None:
         if self._crop_image is None:
