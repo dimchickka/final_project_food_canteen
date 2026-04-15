@@ -19,6 +19,7 @@ from core.menu.menu_repository import MenuRepository
 from core.menu.phrase_regenerator import PhraseRegenerator
 from core.menu.today_menu_service import TodayMenuService
 from core.models.model_registry import get_model_registry
+from core.models.qwen_adapter import QwenAdapter
 from core.pipeline.recognition_orchestrator import RecognitionOrchestrator
 from gui.workers import (
     ConfirmPhraseWorker,
@@ -275,6 +276,8 @@ class AppController(QObject):
         # Lazy first Qwen init may be long; we emit explicit phases from worker thread.
         def _fn(progress_callback: Callable[[str], None] | None = None, **kwargs: Any) -> str:
             self._log_admin_phrase_event("worker started")
+            # Early hook must be set before get_qwen() so first-load stages are visible in UI.
+            QwenAdapter.set_early_admin_diagnostics(progress_callback)
             try:
                 if progress_callback:
                     progress_callback("Подготавливаю Qwen...")
@@ -296,6 +299,9 @@ class AppController(QObject):
             except Exception:
                 self._log_admin_phrase_event(f"exception traceback:\n{traceback.format_exc()}")
                 raise
+            finally:
+                # Clear process-local hook to avoid leaking callback between independent runs.
+                QwenAdapter.set_early_admin_diagnostics(None)
 
         worker = PhraseGenerationWorker(
             WorkerTask(fn=_fn, kwargs={"image": image, "dish_name": dish_name, "category": category})

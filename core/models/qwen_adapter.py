@@ -23,6 +23,7 @@ from core.parsing.qwen_validation_parser import parse_qwen_validation_response
 
 class QwenAdapter:
     """Thin integration layer around Qwen model + task-specific prompts/parsers."""
+    _early_progress_callback: Callable[[str], None] | None = None
 
     def __init__(
         self,
@@ -40,8 +41,14 @@ class QwenAdapter:
 
         self._model: Any | None = None
         self._processor: Any | None = None
-        self._progress_callback: Callable[[str], None] | None = None
+        # Early hook is needed so first-load stages are visible even if loading starts during/around get_qwen().
+        self._progress_callback: Callable[[str], None] | None = self.__class__._early_progress_callback
         self._diag_log_path = Path("data/logs/admin_phrase_generation.log")
+
+    @classmethod
+    def set_early_admin_diagnostics(cls, progress_callback: Callable[[str], None] | None) -> None:
+        """Set/clear process-local early callback used before adapter instance is fully configured."""
+        cls._early_progress_callback = progress_callback
 
     def configure_admin_diagnostics(self, progress_callback: Callable[[str], None] | None = None) -> None:
         """Attach per-request callback so worker can stream precise Qwen load stages to UI."""
@@ -59,9 +66,10 @@ class QwenAdapter:
 
     def _emit_stage(self, message: str, ui_status: str | None = None) -> None:
         self._diag_log(message)
-        if ui_status and self._progress_callback:
+        callback = self._progress_callback or self.__class__._early_progress_callback
+        if ui_status and callback:
             try:
-                self._progress_callback(ui_status)
+                callback(ui_status)
             except Exception:
                 return
 
