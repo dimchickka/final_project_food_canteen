@@ -5,6 +5,8 @@ It coordinates services/workers and exposes simple methods for screens/main wind
 
 from __future__ import annotations
 
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -48,6 +50,7 @@ class AppController(QObject):
         self._models_ready = False
 
         self._model_registry = get_model_registry()
+        self._admin_phrase_log_path = Path("data/logs/admin_phrase_generation.log")
 
         self._global_menu_root = Path("data/menu/global")
         self._today_menu_root = Path("data/menu/today")
@@ -202,6 +205,17 @@ class AppController(QObject):
     def _emit_entrypoint_error(self, message: str) -> None:
         self.operation_error.emit(message)
 
+    def _log_admin_phrase_event(self, message: str) -> None:
+        """Dedicated lightweight file log for admin regenerate-phrase diagnostics."""
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
+        try:
+            self._admin_phrase_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._admin_phrase_log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{ts}] {message}\n")
+        except Exception:
+            # Logging must be best-effort and never block UI workflow.
+            return
+
     def ensure_models_ready_if_needed(self, on_done: Callable[[bool], None] | None = None) -> None:
         if self._models_ready:
             if on_done:
@@ -254,14 +268,34 @@ class AppController(QObject):
             self._emit_entrypoint_error("Не удалось сгенерировать фразу: укажите категорию блюда.")
             return
 
+        self._log_admin_phrase_event(
+            f"regenerate phrase requested | dish_name={dish_name!r} | category={category!r}"
+        )
+
         # Lazy first Qwen init may be long; we emit explicit phases from worker thread.
         def _fn(progress_callback: Callable[[str], None] | None = None, **kwargs: Any) -> str:
-            if progress_callback:
-                progress_callback("Подготавливаю Qwen...")
-            qwen = self._model_registry.get_qwen()
-            if progress_callback:
-                progress_callback("Генерирую фразу...")
-            return qwen.generate_short_dish_phrase(**kwargs)
+            self._log_admin_phrase_event("worker started")
+            try:
+                if progress_callback:
+                    progress_callback("Подготавливаю Qwen...")
+                self._log_admin_phrase_event("status: preparing qwen")
+
+                self._log_admin_phrase_event("enter: ModelRegistry.get_qwen()")
+                qwen = self._model_registry.get_qwen()
+                self._log_admin_phrase_event("exit: ModelRegistry.get_qwen()")
+
+                # Adapter-level stage updates come from inside lazy load and generation.
+                if hasattr(qwen, "configure_admin_diagnostics"):
+                    qwen.configure_admin_diagnostics(progress_callback=progress_callback)
+                    self._log_admin_phrase_event("qwen diagnostics callback configured")
+
+                self._log_admin_phrase_event("status: phrase generation started")
+                phrase = qwen.generate_short_dish_phrase(**kwargs)
+                self._log_admin_phrase_event("status: phrase generation finished")
+                return phrase
+            except Exception:
+                self._log_admin_phrase_event(f"exception traceback:\n{traceback.format_exc()}")
+                raise
 
         worker = PhraseGenerationWorker(
             WorkerTask(fn=_fn, kwargs={"image": image, "dish_name": dish_name, "category": category})

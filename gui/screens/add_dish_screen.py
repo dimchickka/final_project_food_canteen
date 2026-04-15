@@ -40,6 +40,7 @@ class AddDishScreen(QWidget):
         self._slow_feedback_timer = QTimer(self)
         self._slow_feedback_timer.setSingleShot(True)
         self._slow_feedback_timer.timeout.connect(self._on_phrase_generation_slow)
+        self._slow_warning_shown = False
 
         root = QVBoxLayout(self)
 
@@ -188,8 +189,8 @@ class AddDishScreen(QWidget):
             return
 
         self.set_phrase_generation_in_progress(True)
-        # Explicit warmup status: first lazy Qwen load can be noticeably long.
-        self.status.setText("Подготавливаю Qwen... Это может занять некоторое время при первом запуске.")
+        # Initial status is immediately replaced by worker-reported granular stages.
+        self.status.setText("Подготавливаю Qwen...")
         self.regenerate_phrase_requested.emit(self._crop_image, name, category)
 
     def _on_confirm(self) -> None:
@@ -221,7 +222,8 @@ class AddDishScreen(QWidget):
         self.regen_btn.setEnabled(not in_progress)
         self.confirm_btn.setEnabled(not in_progress)
         if in_progress:
-            self._slow_feedback_timer.start(5000)
+            self._slow_warning_shown = False
+            self._slow_feedback_timer.start(12000)
         else:
             self._slow_feedback_timer.stop()
 
@@ -236,8 +238,12 @@ class AddDishScreen(QWidget):
         self.status.setText("Не удалось сгенерировать фразу.")
 
     def _on_phrase_generation_slow(self) -> None:
-        if self._phrase_generation_in_progress:
-            self.status.setText("Подготавливаю Qwen... Это может занять некоторое время при первом запуске.")
+        if self._phrase_generation_in_progress and not self._slow_warning_shown:
+            self._slow_warning_shown = True
+            self.status.setText(
+                "Подготовка модели занимает больше обычного. "
+                "Проверьте путь к модели Qwen и доступную память."
+            )
 
     def set_status(self, text: str) -> None:
         self.status.setText(text)

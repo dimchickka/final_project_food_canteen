@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image
@@ -38,34 +40,79 @@ class QwenAdapter:
 
         self._model: Any | None = None
         self._processor: Any | None = None
+        self._progress_callback: Callable[[str], None] | None = None
+        self._diag_log_path = Path("data/logs/admin_phrase_generation.log")
 
-        self._lazy_load_model()
+    def configure_admin_diagnostics(self, progress_callback: Callable[[str], None] | None = None) -> None:
+        """Attach per-request callback so worker can stream precise Qwen load stages to UI."""
+        self._progress_callback = progress_callback
+
+    def _diag_log(self, message: str) -> None:
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
+        try:
+            self._diag_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._diag_log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{ts}] {message}\n")
+        except Exception:
+            # Diagnostic logging must never break generation path.
+            return
+
+    def _emit_stage(self, message: str, ui_status: str | None = None) -> None:
+        self._diag_log(message)
+        if ui_status and self._progress_callback:
+            try:
+                self._progress_callback(ui_status)
+            except Exception:
+                return
 
     def _lazy_load_model(self) -> None:
         """Load processor/model once; keep imports lazy for lightweight module import."""
         if self._model is not None and self._processor is not None:
             return
 
+        self._emit_stage("QwenAdapter: lazy load start")
+
         try:
             import torch
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            from transformers import AutoModelForVision2Seq, AutoProcessor
         except Exception as exc:  # noqa: BLE001
+            self._emit_stage(f"QwenAdapter: dependency import failed: {exc}")
             raise RuntimeError(
                 "Qwen dependencies are not available. Install 'torch' and 'transformers'."
             ) from exc
 
         torch_dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
+        self._emit_stage(
+            "QwenAdapter: processor load start",
+            "Подготавливаю Qwen: загружаю processor...",
+        )
         self._processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
-        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self._emit_stage("QwenAdapter: processor loaded")
+
+        # Qwen3-VL-4B-Instruct is a vision-to-text instruction model;
+        # AutoModelForVision2Seq selects the correct underlying class from model config.
+        self._emit_stage(
+            "QwenAdapter: model load start",
+            "Подготавливаю Qwen: загружаю модель...",
+        )
+        self._model = AutoModelForVision2Seq.from_pretrained(
             self.model_path,
             torch_dtype=torch_dtype,
             trust_remote_code=True,
         )
+        self._emit_stage("QwenAdapter: model loaded")
+
+        self._emit_stage(
+            f"QwenAdapter: move to device start ({self.device})",
+            "Подготавливаю Qwen: переношу модель на устройство...",
+        )
         self._model.to(self.device)
         self._model.eval()
+        self._emit_stage("QwenAdapter: move to device done")
 
     # Safe minimal warmup to initialize CUDA kernels / model caches.
     def warmup(self) -> None:
+        self._emit_stage("QwenAdapter: warmup start")
         self._ensure_ready()
         dummy = Image.new("RGB", (64, 64), color=(127, 127, 127))
         _ = self._run_generation(
@@ -73,6 +120,7 @@ class QwenAdapter:
             prompt_text='Return JSON only: {"status":"unknown"}',
             max_new_tokens=8,
         )
+        self._emit_stage("QwenAdapter: warmup done")
 
     # Scenario 1: validate tray visibility/quality before costly downstream processing.
     def validate_tray_visibility(self, image: Any) -> ValidationResult:
@@ -96,17 +144,27 @@ class QwenAdapter:
 
     # Scenario 3: produce a short visual phrase for CLIP text embedding pipeline.
     def generate_short_dish_phrase(self, image: Any, dish_name: str, category: str) -> str:
-        prompt = self._build_phrase_prompt(dish_name=dish_name, category=category)
-        raw_text = self._run_generation(
-            image=image,
-            prompt_text=prompt,
-            max_new_tokens=self.phrase_max_new_tokens,
+        self._emit_stage(
+            "QwenAdapter: phrase generation start",
+            "Генерирую фразу...",
         )
-        return self._normalize_phrase(raw_text=raw_text, dish_name=dish_name)
+        prompt = self._build_phrase_prompt(dish_name=dish_name, category=category)
+        try:
+            raw_text = self._run_generation(
+                image=image,
+                prompt_text=prompt,
+                max_new_tokens=self.phrase_max_new_tokens,
+            )
+            normalized = self._normalize_phrase(raw_text=raw_text, dish_name=dish_name)
+            self._emit_stage("QwenAdapter: phrase generation done")
+            return normalized
+        except Exception:
+            self._emit_stage(f"QwenAdapter: phrase generation error\n{traceback.format_exc()}")
+            raise
 
     def _ensure_ready(self) -> None:
         if self._model is None or self._processor is None:
-            raise RuntimeError("Qwen model is not loaded. Check model path and dependencies.")
+            self._lazy_load_model()
 
     def _normalize_image(self, image: Any) -> Image.Image:
         """Accept ndarray/PIL/path-like inputs and normalize to RGB PIL.Image."""
